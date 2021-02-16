@@ -1,0 +1,17 @@
+add     $rd, $rs, $rt	R[$rd] ← R[$rs] + R[$rt]
+sub     $rd, $rs, $rt	R[$rd] ← R[$rs] - R[$rt]
+
+addi    $rt, $rs, imm	R[$rt] ← R[$rs] + imm
+
+mul     $rd, $rs, $rt	R[$rd] ← R[$rs] * R[$rt
+mod     $rd, $rs, $rt	R[$rd] ← R[$rs] - R[$rt
+div     $rd, $rs, $rt	R[$rd] ← R[$rs] / R[$rt
+
+lw      $rt, imm($rs)   R[$rt] ← MEM(R[$rs] + imm)
+sw      $rt, imm($rs)	MEM(R[$rs] + imm) ← R[$rt]      
+
+beq     
+bne
+ble
+blt
+j
