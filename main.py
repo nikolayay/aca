@@ -10,6 +10,12 @@ parser.add_argument("-f", "--file", dest="filename", required=True,
                 help="input file with MIPS assembly code",
                 type=argparse.FileType())
 
+parser.add_argument("-p", "--processor", required=True,
+                    help="Provide the kind of the simulated processor",
+                    choices=['simple', 'pipelined'],
+                    dest='processor_type'
+                    )
+
 args = parser.parse_args()
 if args.verbose:
     logging.basicConfig(level=logging.DEBUG)
@@ -24,10 +30,12 @@ except:
 instructions, symbols = assembler.assemble(program)
 cpu = SimpleProcessor(instructions, symbols)
 
-print(instructions, symbols)
-i = 0
-while cpu.running() :
-    cpu.cycle()
-    i += 1
+# print(instructions, symbols)
+
+while cpu.running():
+    if args.processor_type=='simple': cpu.simple_cycle()
+    elif args.processor_type == 'pipelined': cpu.cycle_pipelined()
+    else: raise RuntimeError("Processor type not implemented")
+
 
 cpu.print_stats()

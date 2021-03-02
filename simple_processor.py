@@ -1,153 +1,140 @@
-arithmetic = ['add', 'sub', 'mul', 'mod', 'div', 'imul', 'idiv']
-immediate = ['addi']
-memory = ['lw', 'sw']
-branches = ['beq', 'bne', 'blt', 'ble']
-jumps = ['j']
+
 
 import re
+from types import SimpleNamespace
+import inspect
+from copy import copy
 
 
-class Instruction:
-    def __init__(self, opcode, operand_str, RF, symbols):
-        self.opcode = opcode
-        self.operand_str = operand_str
+from instruction import *
+
+"""
+Instruction fetch module. Fetch next instruction, add it to the instruction queue and increment the PC for the next cycle.
+"""
+class IF:
+    def __init__(self, program):
+        self.program = program
+    
+    def run(self, PC, instruction_queue):
+        if PC >= len(self.program): return []
+        
+        if (PC > len(self.program) or PC < 0): raise RuntimeError(f"PC out of bounds. PC={PC} for program of length {len(self.program)}")
+        
+        instruction = self.program[PC]
+
+
+        return [('set', 'PC', PC + 1), ('push', 'instruction_queue', instruction)]
+
+"""
+Decode the instruction and chuck it onto the execution queue
+"""
+class ID:
+    def __init__(self, symbols):
         self.symbols = symbols
-        self.branch_target = None
+    
+    """
+    Get the top-most instruciton on the queue, decode and return
+    """
+    def run(self, instruction_queue, RF, execution_queue):
+
+        updates = []
         
-        if self.opcode in arithmetic:
-            
-
-            operands = self.parse_operands("^(?P<rd>\$\w*) (?P<rs>\$\w*) (?P<rt>\$\w*)$")
-            
-            # prefetching
-            self.target = operands['rd']
-            self.rs = RF[operands['rs']]
-            self.rt = RF[operands['rt']]
-
-        elif self.opcode in immediate:
+        if (len(instruction_queue) > 0):
+            # pop off instruction  queue
            
-            
-            operands = self.parse_operands("^(?P<rt>\$\w*) (?P<rs>\$\w*) (?P<imm>-*\d+)$")
-            
-            # prefetching
-            self.target = operands['rt']
-            self.rs = RF[operands['rs']]
-            self.imm = operands['imm']
 
-        elif self.opcode in memory:
+            instruction = instruction_queue[-1]
+
+            opcode = instruction.split()[0]
+            operand_str = instruction.split(opcode)[1].strip()
+            decoded_instruction = Instruction(opcode, operand_str, RF, self.symbols)
+
+            # in any case, commit the pop
+            updates.append(('pop', 'instruction_queue', None))
+
+            # if this is a branch instruction, prepare to  
+            if (decoded_instruction.branch_target):
+                # branch condition is true, so we need to hop, otherwise we do nothing
+                if decoded_instruction.branch_target != -1:
+                    updates.append(('set', 'PC', decoded_instruction.branch_target))
+
+                return updates
+                
+            # if this isnt a branch instruction then ww proceed with execution as normal
+            else:
+                updates.append(('push', 'execution_queue', decoded_instruction))
+
+    
+        return updates
+
+
+class EX:
+    def __init__(self):
+        pass
+
+    def run(self, execution_queue, memory_queue, writeback_queue):
+        updates = []
+       
+        if (len(execution_queue) > 0):
            
-            
-            operands = self.parse_operands("^(?P<rt>\$\w*) *(?P<imm>\w+)\((?P<rs>\$\w*|\d*)\)$")
-            
-            # prefetching
-            self.target = operands['rt']
-            self.rs = RF[operands['rs']]
-            self.imm = operands['imm']
+            instruction = execution_queue[-1]
+            target_addr, result = instruction.execute()
 
-            
-        elif self.opcode in branches:
-            
-            operands = self.parse_operands("^(?P<rs>\$\w*) (?P<rt>\$\w*) (?P<imm>-*\d+|\$*\w*)$")
-            
-            # prefetching
-            self.rs = RF[operands['rs']]
-            self.rt = RF[operands['rt']]
-            self.imm = operands['imm']
-            
-            self.evaluate_registers()
+            # updated state
+            if target_addr is not None:
+                updates.append(
+                    ('push', 'memory_queue', (instruction.target, target_addr, instruction.opcode)))
+            if result is not None: updates.append(('push', 'writeback_queue', (instruction.target, result)))
 
-        elif self.opcode in jumps:
+            updates.append(('pop', 'execution_queue', None))
 
-            operands = self.parse_operands("^(?P<imm>\w*)$")
+
+        return updates
+
+
+
+class MEM:
+    def __init__(self):
+        pass
+    def run(self, MEM, memory_queue):
+        updates = []
+
+        if (len(memory_queue) > 0):
+            # we care about the opcode to distinguish between a load and a store
+            register_ix, target_addr, opcode = memory_queue[-1]
             
-            # prefetching
-            self.imm = operands['imm']
-            
-            self.evaluate_registers()
+            updates.append(('pop', 'memory_queue', None))
 
-        else: raise RuntimeError(f"Decode of {self.opcode} {self.operand_str} -> Not implemented")
+            if opcode == 'lw':
+                updates.append(('push', 'writeback_queue', (register_ix, MEM[target_addr])))
+            elif opcode == 'sw':
+                updates.append(('write_mem', 'MEM', (register_ix, target_addr, opcode)))
+            else:
+                raise RuntimeError("Error handling a memory operation")
 
-    def parse_operands(self, pattern):
-        match = re.match(pattern, self.operand_str)
-        if not match: raise RuntimeError(f"Match broken for instruction {self.opcode} {self.operand_str}")
-
-        operands = {}
+        return updates
+class WB:
+    def __init__(self):
+        pass
+    def run(self, RF, writeback_queue):
+        updates = []
         
-        for k, v in match.groupdict().items():
-            if v in self.symbols: operands[k] = self.symbols[v]
-            elif v[0] == '$': operands[k] = int(v[1:])
-            else: operands[k] = int(v)     
-        
-        return operands
+        if (len(writeback_queue) > 0):
+           
+            register_ix, result = writeback_queue[-1]
 
-    # set the branch target address if the branch condition evaluated to true:
-    # if false just go to the next instruction
-    def evaluate_registers(self):
-        if self.opcode not in branches + jumps: 
-            raise RuntimeError(f"You should not be calling this method when processing the instruction {self.opcode} {self.operand_str}")
-        
-        if self.opcode == 'beq':
-            if (self.rs == self.rt):
-                self.branch_target = self.imm;
-            else: self.branch_target = -1
+            updates.append(('pop', 'writeback_queue', None)) 
+            updates.append(('write_reg', 'RF', (register_ix, result)))
 
-        elif self.opcode == 'blt':
-            if (self.rs < self.rt):
-                self.branch_target = self.imm;
-            else: self.branch_target = -1
+       
+        return updates
 
-        elif self.opcode == 'ble':
-            if (self.rs <= self.rt):
-                self.branch_target = self.imm;
-            else: self.branch_target = -1
-
-        elif self.opcode == 'j':
-            self.branch_target = self.imm;
-        
-        else:
-            raise RuntimeError(f"Branch evaluate of {self.opcode} -> Not implemented")
-
-    # returns a target_address and the result and a branch target
-    def execute(self):
-        if self.opcode in branches + jumps:
-            raise RuntimeError("You should not call execute on branch or jump instructions")
-
-        if self.opcode == 'add':
-            return None, self.rs + self.rt
-
-        elif self.opcode == 'sub':
-            return None, self.rs - self.rt
-
-        elif self.opcode == 'mul':
-            return None, self.rs * self.rt
-
-        elif self.opcode == 'imul':
-            return None, int(int(self.rs) * int(self.rt))
-
-        elif self.opcode == 'mod':
-            return None, int(int(self.rs) % int(self.rt))
-
-        elif self.opcode == 'div':
-            return None, self.rs / self.rt
-
-        elif self.opcode == 'idiv':
-            return None, int(int(self.rs) / int(self.rt))
-
-        elif self.opcode == 'addi':
-            return None, self.rs + self.imm
-
-        elif self.opcode == 'lw' or self.opcode == 'sw':
-            return self.rs + self.imm, None
-
-        else:
-            raise RuntimeError(f"Execute of {self.opcode} -> Not implemented")
-
-
-class SimpleProcessor():
+    
+class SimpleProcessor:
 
     def __init__(self, program, symbols):
-        self.program = program
         self.symbols = symbols
+        self.program = program
         
         self.PC = 0
        
@@ -157,8 +144,136 @@ class SimpleProcessor():
         self.cycles = 0
         self.executed = 0
 
-    def cycle(self):
+        self.resolve_labels()
+
+
+        # ? appear in the order they would in the diagram
+
+        self.IF = IF(self.program)
+        self.instruction_queue = []
+        self.ID = ID(self.symbols)
+        self.execution_queue = []
+        self.EX = EX()
+        self.memory_queue = []
+        self.writeback_queue = []
+        self._MEM = MEM()
+        self.WB = WB()
         
+        # self.WB = WB()
+
+   
+    def resolve_labels(self):
+        clean_program = []
+        # PC_offset = 0
+        for line in self.program:
+            if line[0] == '.': # ! a label or malloc
+                label = line[1 : line.index(':')]
+                values = [int(x) for x in line.split()[1:]]
+                
+                addr = len(self.MEM)
+                self.MEM += values
+                self.symbols[label] = addr # bottom address of label
+                # PC_offset += 1
+                
+            else: # regular instruction
+                clean_program.append(line)
+       
+        self.program = clean_program
+
+
+    def tick(self, updates):
+
+        for action, attr, val, in updates:
+            # print(updates)
+            current = getattr(self, attr)
+            if action == 'pop':
+                updated = current[:-1]
+                setattr(self, attr, updated)
+
+            elif action == 'push':
+                updated = [val] + current
+                setattr(self, attr, updated)
+
+            elif action == 'set':
+                setattr(self, attr, val)
+
+            elif action == 'write_reg':
+                reg_target, result = val
+                self.RF[reg_target] = result
+                self.executed += 1
+
+            elif action == 'write_mem':
+                reg_target, target_addr, opcode = val
+                
+                if opcode == 'lw': self.MEM[target_addr]
+                elif opcode  == 'sw': self.MEM[target_addr] =  self.RF[reg_target]
+                else:
+                    raise RuntimeError("Error handling a memory operation")
+                self.executed += 1
+
+            else: raise RuntimeError(f'Update type {action} not implemented')
+                    
+    def cycle_pipelined(self):
+
+        updates = []
+        
+        update_IF = self.IF.run(
+            PC=self.PC, 
+            instruction_queue=self.instruction_queue            
+            )
+        
+        update_ID = self.ID.run(
+            RF=self.RF,
+            instruction_queue=self.instruction_queue,
+            execution_queue=self.execution_queue,
+            )
+
+        # repeat IF in case we had a branch
+        # update_ID = self.IF.run(
+
+        #     instruction_queue=self.instruction_queue,
+        #     execution_queue=self.execution_queue,
+        # )
+
+        update_EX = self.EX.run(
+            execution_queue=self.execution_queue,
+            memory_queue=self.memory_queue,
+            writeback_queue=self.writeback_queue,
+        )
+
+        update_MEM = self._MEM.run(
+            MEM=self.MEM,
+            memory_queue=self.memory_queue,
+        )
+
+
+        update_WB = self.WB.run(
+            RF = self.RF,
+            writeback_queue=self.writeback_queue,
+        )
+
+        
+        self.cycles += 1
+
+        updates = update_IF + update_ID + update_EX + update_MEM + update_WB
+       
+        
+        print(f'cycle: {self.cycles}')
+        print(f'IF: {update_IF}')
+        print(f'ID: {update_ID}')
+        print(f'EX: {update_EX}')
+        print(f'MEM: {update_MEM}')
+        print(f'WB: {update_WB}')
+        
+        # print(updates)
+        self.tick(updates)
+
+        txt = input("Press enter for next cycle")
+
+    def simple_cycle(self):
+        
+        self.cycles += 1
+
         # Fetch
         instruction = self.fetch()
 
@@ -167,13 +282,13 @@ class SimpleProcessor():
 
 
         if (instruction_decoded.branch_target):
-            # skipping the rest if we don't need to branch (target == -1)
-            if instruction_decoded.branch_target > 0: self.PC = instruction_decoded.branch_target;
+            # set the pc accordingly and exit this cycle because no work is left to be performed on this instruction
+            if instruction_decoded.branch_target != -1: self.PC = instruction_decoded.branch_target;
+            self.executed += 1
             return
 
         # Execute
         target_addr, result = self.execute(instruction_decoded)
-
 
         if target_addr is not None:
             result = self.mem_access(target_addr, instruction_decoded)
@@ -181,7 +296,7 @@ class SimpleProcessor():
         if result is not None:
             self.write_back(result, instruction_decoded)
 
-       
+        self.executed += 1
 
     def fetch(self):
         instruction = self.program[self.PC]
@@ -189,22 +304,10 @@ class SimpleProcessor():
         return instruction
 
     def decode(self, instruction):
-              
-        if instruction[0] == '.': # ! a label or malloc
-            label = instruction[1 : instruction.index(':')]
-            values = [int(x) for x in instruction.split()[1:]]
-            
-            addr = len(self.MEM)
-            self.MEM += values
-            self.symbols[label] = addr # bottom address of label
-            
-            opcode = 'add'
-            operand_str = '$32 $32 $32'
-        else: # regular instruction
-            opcode = instruction.split()[0]
-            operand_str = instruction.split(opcode)[1].strip()
-            
-        # read the registers
+
+        opcode = instruction.split()[0]
+        operand_str = instruction.split(opcode)[1].strip()
+
         i = Instruction(opcode, operand_str, self.RF, self.symbols)
        
         return i
@@ -229,73 +332,6 @@ class SimpleProcessor():
         
         self.RF[i.target] = result
 
-        # if len(self.wbq) > 0:
-        #     # Only write back if it has been enough cycles
-        #     if self.wbq[0][2] <= 0 and self.wbq[0][4] < 0:
-        #         # 1. Broadcast the name (or tag) and the value of the completed instruction
-        #         #    back to the rs so that the rs can 'capture' the values.
-        #         tag, val, cycles, op, allowed = self.wbq.pop(0)
-        #         self.rs.capture(tag, val)
-        #         self.lsq.capture(tag, val)
-        #         # 2. Place the broadcast value into the rob_entry used for that instruction.
-        #         #    Set rob_entry.done to True
-        #         self.rob.entries[tag].val = val
-        #         self.rob.entries[tag].done = True
-        # # Commit
-        # # 1. Test if next instruction at commit pointer of rob is done.
-        # # 2. If it is done, commit:
-        # #        a. Write the rob_entry.val to the rob_entry.reg.
-        # #        b. If rob_entry is latest rename of rat for rob_entry.reg,
-        # #               update rat to point to rob_entry.reg instead of rob_entry
-        # #           else:
-        # #               leave rat entry as is
-        # rob_entry = self.rob.entries[self.rob.commit]
-        # load = rob_entry.load
-        # branch = rob_entry.branch
-        # if rob_entry.done == True:
-        #     self.rf[rob_entry.reg] = rob_entry.val
-        #     if self.rat[rob_entry.reg] == self.rob.commit:
-        #         self.rat[rob_entry.reg] = None
-        #     self.rob.entries[self.rob.commit] = ROB.ROB_entry()
-        #     self.rs.capture(self.rob.commit, rob_entry.val)
-        #     self.lsq.capture(self.rob.commit, rob_entry.val)
-        #     self.rob.commit += 1
-        #     if self.rob.commit == len(self.rob.entries):
-        #         self.rob.commit = 0
-        #     if load:
-        #         lsq_entry = self.lsq.entries[self.lsq.commit]
-        #         if lsq_entry.op == 'sw':
-        #             self.mem[lsq_entry.addr] = self.rf[lsq_entry.reg]
-        #         elif lsq_entry.op == 'lw':
-        #             self.rf[rob_entry.reg] = self.mem[lsq_entry.addr]
-        #         self.lsq.entries[self.lsq.commit] = LSQ.LSQ_entry()
-        #         self.lsq.entries[self.lsq.commit].complete = True
-        #         self.lsq.commit += 1
-        #     if branch:
-        #         correct, pc = self.predictor.check(
-        #             self.rf,
-        #             rob_entry.op,
-        #             rob_entry.operands,
-        #             rob_entry.current_pc,
-        #             rob_entry.next_pc,
-        #             self.executed,
-        #         )
-        #         if not correct:
-        #             self.iq = []
-        #             self.opq = []
-        #             self.rob = ROB(self.rob_size)
-        #             array_labels = self.lsq.array_labels
-        #             self.lsq = LSQ()
-        #             self.lsq.array_labels = array_labels
-        #             self.rat = [None] * 128
-        #             self.rs = RS()
-        #             self.eq = []
-        #             self.wbq = []
-        #             self.pc = pc
-        #             self.new_iq = []
-        #             self.new_opq = []
-        #             self.new_eq = []
-        #     self.executed += 1
 
 
     def running(self):
@@ -305,22 +341,10 @@ class SimpleProcessor():
 
         regs = {f"r{i}":r for i, r in enumerate(self.RF)}
         
-        print(f"REGS: {regs}\n\n")
-        print(f"MEM: {self.MEM}")
+        # print(f"REGS: {regs}\n\n")
+        # print(f"MEM: {self.MEM}")
 
-        # print(f'cycle: {self.cycles}')
-        # print(f'executed: {self.executed}')
-        # print(f'instruction queue: {self.iq}')
-        # print(f'op queue: {self.opq}')
-        # print(f'register file: {self.rf}')
-        # print(f'rob: { [f"{e.reg}, {e.val}, {e.done}" for e in self.rob.entries[:10]] }')
-        # print(
-        #     f'lsq: { [f"{e.op}, {e.dest_tag}, {e.addr}, {e.val}, {e.done}" for e in self.lsq.entries[:10]] }'
-        # )
-        # print(f'rat: {self.rat[:20]}')
-        # print(
-        #     f'res station: { [f"{rs.op}, {rs.dest_tag}, {rs.tag1}, {rs.tag2}, {rs.val1}, {rs.val2}" for rs in filter(None, self.rs.entries[:6])] }'
-        # )
-        # # print(f'exec queue: { [f"{rs.op}, {rs.dest_tag}, {rs.tag1}, {rs.tag2}, {rs.val1}, {rs.val2}" for rs in filter(None, self.eq[:6])] }')
-        # print(f'writeback queue: {self.wbq}')
-        # print(f'memory: {self.mem}')
+        print(f'Cycles completed: {self.cycles}')
+        print(f'Instructions executed: {self.executed}')
+        print(f'Instructions per cycle: {self.executed / self.cycles}')
+        

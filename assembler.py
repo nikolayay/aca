@@ -22,7 +22,6 @@ def collect_labels(assembly):
         if line[0] > ' ':
             symbol = fields[0]
             if (symbol[0] != '.'): symbols[symbol[:-1]] = pc # remove the colon and save the memory address
-            else: pc = pc + 1
         else:
             pc = pc + 1
     return symbols

@@ -1,5 +1,4 @@
     addi $0 $0 90           ; int n = 90
-    addi $1 $1 1            ; int i = 1
 
 for:
     addi $1 $1 1            ; i++
