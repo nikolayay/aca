@@ -4,6 +4,9 @@ import re
 from types import SimpleNamespace
 import inspect
 from copy import copy
+from columnar import columnar
+import numpy as np
+import click
 
 
 from instruction import *
@@ -12,16 +15,20 @@ from instruction import *
 Instruction fetch module. Fetch next instruction, add it to the instruction queue and increment the PC for the next cycle.
 """
 class IF:
-    def __init__(self, program):
+    def __init__(self, program, symbols):
         self.program = program
+        self.symbols = symbols
     
     def run(self, PC, instruction_queue):
         if PC >= len(self.program): return []
         
         if (PC > len(self.program) or PC < 0): raise RuntimeError(f"PC out of bounds. PC={PC} for program of length {len(self.program)}")
         
-        instruction = self.program[PC]
+        instruction_string = self.program[PC]
 
+        instruction = Instruction(instruction_string, self.symbols, PC)
+
+        assert(isinstance(instruction, Instruction))
 
         return [('set', 'PC', PC + 1), ('push', 'instruction_queue', instruction)]
 
@@ -29,25 +36,64 @@ class IF:
 Decode the instruction and chuck it onto the execution queue
 """
 class ID:
-    def __init__(self, symbols):
-        self.symbols = symbols
+    def __init__(self):
+        self.branch_target = None
+        self.forwarded = {} # dictionary of recently forwarded register values
+
+        self.entry_max_age = 2
+
+
+    # list of tuples of shape (reg_ix, val)
+    def accept_forward_registers(self, pair):
+        reg_ix, val, *rest =  pair
+        self.forwarded[reg_ix] = (val, self.entry_max_age)
+
+    """
+    We loop over all of the instructions and decrement the age, then delete ones with 0 age
+    """
+    def cleanup_forward_registers(self):
+        new_forwarded = {}
+        for reg_ix, pair in self.forwarded.items():
+            val, age = pair
+            new_age = age - 1
+
+            if new_age > 0: new_forwarded[reg_ix] = (val, new_age)
+
+        self.forwarded = new_forwarded
+
+
     
     """
     Get the top-most instruciton on the queue, decode and return
     """
     def run(self, instruction_queue, RF, execution_queue):
 
+        # ? we keep the forwarded instruction for two cycles        
+        self.cleanup_forward_registers()
+
         updates = []
         
         if (len(instruction_queue) > 0):
             # pop off instruction  queue
-           
-
+        
             instruction = instruction_queue[-1]
 
-            opcode = instruction.split()[0]
-            operand_str = instruction.split(opcode)[1].strip()
-            decoded_instruction = Instruction(opcode, operand_str, RF, self.symbols)
+            parsed_instruction = instruction.parse()
+            
+            # todo implement bypassing
+            
+            source_regs = parsed_instruction.fetch_source_registers()
+
+            # replacing relevant inputs
+            for source_reg in source_regs:
+                if source_reg in self.forwarded:
+                    val, age = self.forwarded[source_reg]
+                    RF[source_reg] = val
+
+            # decoding the instruction with updated register file
+            decoded_instruction = parsed_instruction.read_register_file(RF)
+
+            assert(isinstance(instruction, Instruction))
 
             # in any case, commit the pop
             updates.append(('pop', 'instruction_queue', None))
@@ -56,6 +102,7 @@ class ID:
             if (decoded_instruction.branch_target):
                 # branch condition is true, so we need to hop, otherwise we do nothing
                 if decoded_instruction.branch_target != -1:
+
                     updates.append(('set', 'PC', decoded_instruction.branch_target))
 
                 return updates
@@ -72,19 +119,21 @@ class EX:
     def __init__(self):
         pass
 
+
     def run(self, execution_queue, memory_queue, writeback_queue):
         updates = []
        
         if (len(execution_queue) > 0):
            
             instruction = execution_queue[-1]
-            target_addr, result = instruction.execute()
+            computed_instruction = instruction.compute()
 
             # updated state
-            if target_addr is not None:
+            if computed_instruction.target_address is not None:
                 updates.append(
-                    ('push', 'memory_queue', (instruction.target, target_addr, instruction.opcode)))
-            if result is not None: updates.append(('push', 'writeback_queue', (instruction.target, result)))
+                    ('push', 'memory_queue', computed_instruction))
+            if computed_instruction.result is not None: updates.append(('push', 'writeback_queue', computed_instruction))
+
 
             updates.append(('pop', 'execution_queue', None))
 
@@ -101,14 +150,23 @@ class MEM:
 
         if (len(memory_queue) > 0):
             # we care about the opcode to distinguish between a load and a store
-            register_ix, target_addr, opcode = memory_queue[-1]
+            instruction = memory_queue[-1]
             
             updates.append(('pop', 'memory_queue', None))
 
-            if opcode == 'lw':
-                updates.append(('push', 'writeback_queue', (register_ix, MEM[target_addr])))
-            elif opcode == 'sw':
-                updates.append(('write_mem', 'MEM', (register_ix, target_addr, opcode)))
+            if instruction.opcode == 'lw':
+                # ! the load method fills the instruction's result field 
+
+                instruction.result = MEM[instruction.target_address]
+       
+                #updates.append(('push', 'writeback_queue', (register_ix, MEM[target_addr])))
+                updates.append(('push', 'writeback_queue', instruction))
+
+            elif instruction.opcode == 'sw':
+
+                # write to memory and finish
+                updates.append(('write_mem', 'MEM', instruction))
+            
             else:
                 raise RuntimeError("Error handling a memory operation")
 
@@ -116,15 +174,19 @@ class MEM:
 class WB:
     def __init__(self):
         pass
+
+   
     def run(self, RF, writeback_queue):
         updates = []
         
         if (len(writeback_queue) > 0):
            
-            register_ix, result = writeback_queue[-1]
+            instruction = writeback_queue[-1]
 
             updates.append(('pop', 'writeback_queue', None)) 
-            updates.append(('write_reg', 'RF', (register_ix, result)))
+
+            # write the register and finish
+            updates.append(('write_reg', 'RF', instruction))
 
        
         return updates
@@ -149,9 +211,9 @@ class SimpleProcessor:
 
         # ? appear in the order they would in the diagram
 
-        self.IF = IF(self.program)
+        self.IF = IF(self.program, self.symbols)
         self.instruction_queue = []
-        self.ID = ID(self.symbols)
+        self.ID = ID()
         self.execution_queue = []
         self.EX = EX()
         self.memory_queue = []
@@ -160,6 +222,12 @@ class SimpleProcessor:
         self.WB = WB()
         
         # self.WB = WB()
+
+        # for debugging
+        self.instruction_queue_history = [0] * 5
+        self.execution_queue_history = [0] * 5
+        self.memory_queue_history = [0] * 5
+        self.writeback_queue_history = [0] * 5
 
    
     def resolve_labels(self):
@@ -184,8 +252,14 @@ class SimpleProcessor:
     def tick(self, updates):
 
         for action, attr, val, in updates:
-            # print(updates)
+            
             current = getattr(self, attr)
+
+            # ! keeping the history of all insgtructions for debugging
+            if attr in ['instruction_queue', 'execution_queue', 'memory_queue', 'execution_queue', 'writeback_queue'] and val:
+                history = getattr(self, f'{attr}_history')
+                setattr(self, f'{attr}_history', [val] + history)
+            
             if action == 'pop':
                 updated = current[:-1]
                 setattr(self, attr, updated)
@@ -198,22 +272,27 @@ class SimpleProcessor:
                 setattr(self, attr, val)
 
             elif action == 'write_reg':
-                reg_target, result = val
-                self.RF[reg_target] = result
+                assert(isinstance(val, Instruction))
+                
+                instruction = val
+                self.RF[instruction.target_register] = instruction.result
                 self.executed += 1
 
             elif action == 'write_mem':
-                reg_target, target_addr, opcode = val
+                assert(isinstance(val, Instruction))
+
+                instruction = val
+                if instruction.opcode != 'sw': raise RuntimeError("Error handling a memory operation")
                 
-                if opcode == 'lw': self.MEM[target_addr]
-                elif opcode  == 'sw': self.MEM[target_addr] =  self.RF[reg_target]
-                else:
-                    raise RuntimeError("Error handling a memory operation")
+                self.MEM[instruction.target_address] =  self.RF[instruction.target_register]
                 self.executed += 1
 
             else: raise RuntimeError(f'Update type {action} not implemented')
-                    
+
+    # ! 3 extra cycles to process the stop
     def cycle_pipelined(self):
+
+        self.cycles += 1
 
         updates = []
         
@@ -228,18 +307,13 @@ class SimpleProcessor:
             execution_queue=self.execution_queue,
             )
 
-        # repeat IF in case we had a branch
-        # update_ID = self.IF.run(
-
-        #     instruction_queue=self.instruction_queue,
-        #     execution_queue=self.execution_queue,
-        # )
-
+       
         update_EX = self.EX.run(
             execution_queue=self.execution_queue,
             memory_queue=self.memory_queue,
             writeback_queue=self.writeback_queue,
         )
+
 
         update_MEM = self._MEM.run(
             MEM=self.MEM,
@@ -252,21 +326,24 @@ class SimpleProcessor:
             writeback_queue=self.writeback_queue,
         )
 
-        
-        self.cycles += 1
 
+        # forwarding
+        to_forward = update_EX + update_MEM
+
+        # todo iterate over to_forward and the result of every push operation to the ID by callding ID.accept_forward_registers(updates)
+        # print(to_forward)
+        # for action, attr, val in to_forward:
+        #     if action == 'push' and attr == 'writeback_queue': self.ID.accept_forward_registers(val)
+
+
+        
+        # processor state update
         updates = update_IF + update_ID + update_EX + update_MEM + update_WB
-       
-        
-        print(f'cycle: {self.cycles}')
-        print(f'IF: {update_IF}')
-        print(f'ID: {update_ID}')
-        print(f'EX: {update_EX}')
-        print(f'MEM: {update_MEM}')
-        print(f'WB: {update_WB}')
-        
-        # print(updates)
+    
+               
         self.tick(updates)
+
+        self.print_stats()
 
         txt = input("Press enter for next cycle")
 
@@ -275,62 +352,63 @@ class SimpleProcessor:
         self.cycles += 1
 
         # Fetch
-        instruction = self.fetch()
+        blank_instruction = self.fetch()
 
         # Decode
-        instruction_decoded = self.decode(instruction)
+        decoded_instruction = self.decode(blank_instruction)
 
-
-        if (instruction_decoded.branch_target):
+        if (decoded_instruction.branch_target):
             # set the pc accordingly and exit this cycle because no work is left to be performed on this instruction
-            if instruction_decoded.branch_target != -1: self.PC = instruction_decoded.branch_target;
+            if decoded_instruction.branch_target != -1: self.PC = decoded_instruction.branch_target;
             self.executed += 1
             return
 
         # Execute
-        target_addr, result = self.execute(instruction_decoded)
+        computed_instruction = decoded_instruction.compute()
 
-        if target_addr is not None:
-            result = self.mem_access(target_addr, instruction_decoded)
-        
-        if result is not None:
-            self.write_back(result, instruction_decoded)
+        # Mem acess
+        if computed_instruction.target_address is not None:
+            result = self.mem_access(computed_instruction)
+            computed_instruction.result = result
 
-        self.executed += 1
+        # Writeback
+        if computed_instruction.result is not None:
+            self.write_back(computed_instruction)
 
     def fetch(self):
-        instruction = self.program[self.PC]
+        instruction_string = self.program[self.PC]
+
+        blank_instruction = Instruction(instruction_string, self.symbols, self.PC) 
+
         self.PC += 1
-        return instruction
+        return blank_instruction
 
-    def decode(self, instruction):
+    def decode(self, blank_instruction):
 
-        opcode = instruction.split()[0]
-        operand_str = instruction.split(opcode)[1].strip()
+        parsed_instruction = blank_instruction.parse().collect_operands()
 
-        i = Instruction(opcode, operand_str, self.RF, self.symbols)
+        i = parsed_instruction.read_register_file(self.RF)
        
         return i
 
-    
-    
     def execute(self, i):
         return i.execute()
-
-    
-    def mem_access(self, target_addr, i):
+ 
+    def mem_access(self, i):
        
         if i.opcode == 'lw':
-            return self.MEM[target_addr]
+            return self.MEM[i.target_address]
         elif i.opcode  == 'sw':
-           self.MEM[target_addr] =  self.RF[i.target]
+           self.MEM[i.target_address] =  self.RF[i.target_register]
+           self.executed += 1
+
         else:
             raise RuntimeError("Error handling a memory operation")
         
-    
-    def write_back(self, result, i):
-        
-        self.RF[i.target] = result
+
+    def write_back(self, i):
+        self.RF[i.target_register] = i.result
+        self.executed += 1
 
 
 
@@ -339,10 +417,40 @@ class SimpleProcessor:
 
     def print_stats(self):
 
-        regs = {f"r{i}":r for i, r in enumerate(self.RF)}
+        queue_headers = ['name'] + [f'clock_{i}' for i in range(self.cycles, self.cycles + 5)]
+        colors = ['green', 'bright_yellow', 'yellow', 'bright_red', 'red', 'black', 'black', 'black']
+
+        def kek(i): return click.style(
+            str(i), fg=i.colour) if isinstance(i, Instruction) else click.style(
+            str(i), fg='black')
+
+        i_queue = ['INSTRUCTION_QUEUE'] + [kek(entry) for i, entry in enumerate(self.instruction_queue_history[:5])]
+        e_queue = ['EXECUTION_QUEUE'] + [kek(entry) for i, entry in enumerate(self.execution_queue_history[:5])]
+        m_queue = ['MEMORY_QUEUE'] + [kek(entry) for i, entry in enumerate(self.memory_queue_history[:5])]
+        w_queue = ['WRITEBACK_QUEUE'] + [kek(entry) for i, entry in enumerate(self.writeback_queue_history[:5])]
+
+        queue_data = [i_queue, e_queue, m_queue, w_queue]
+
+        queue_table = columnar(queue_data, queue_headers, no_borders=True)
+
+        reg_headers = [f"r{i}" for i, r in enumerate(self.RF)]
+        reg_table_1 = columnar(
+            [self.RF[:16]], reg_headers[:16], no_borders=True)
+        reg_table_2 = columnar(
+            [self.RF[16:]], reg_headers[16:], no_borders=True)
+
+        print("\nQUEUES")
+        print(f"{queue_table}\n")
+
         
-        # print(f"REGS: {regs}\n\n")
-        # print(f"MEM: {self.MEM}")
+        print("\nFORWARDED REGISTERS")
+        print(self.ID.forwarded)
+
+        print("\nREGISTER FILE")
+        print(f"{reg_table_1}{reg_table_2}\n")
+        
+        
+        print(f"MEM: {self.MEM}")
 
         print(f'Cycles completed: {self.cycles}')
         print(f'Instructions executed: {self.executed}')
