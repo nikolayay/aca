@@ -16,6 +16,8 @@ parser.add_argument("-p", "--processor", required=True,
                     dest='processor_type'
                     )
 
+parser.add_argument("-d", "--debug", dest='debug', action='store_true', default=False, help='Debug mode')
+
 args = parser.parse_args()
 if args.verbose:
     logging.basicConfig(level=logging.DEBUG)
@@ -28,7 +30,7 @@ except:
 
 
 instructions, symbols = assembler.assemble(program)
-cpu = SimpleProcessor(instructions, symbols)
+cpu = SimpleProcessor(instructions, symbols, debug=args.debug)
 
 # print(instructions, symbols)
 

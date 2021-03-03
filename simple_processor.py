@@ -44,20 +44,20 @@ class ID:
 
 
     # list of tuples of shape (reg_ix, val)
-    def accept_forward_registers(self, pair):
-        reg_ix, val, *rest =  pair
-        self.forwarded[reg_ix] = (val, self.entry_max_age)
+    def bypass(self, pair):
+        target_register, result =  pair
+        self.forwarded[target_register] = (result, self.entry_max_age)
 
     """
     We loop over all of the instructions and decrement the age, then delete ones with 0 age
     """
     def cleanup_forward_registers(self):
         new_forwarded = {}
-        for reg_ix, pair in self.forwarded.items():
-            val, age = pair
+        for target_register, pair in self.forwarded.items():
+            result, age = pair
             new_age = age - 1
 
-            if new_age > 0: new_forwarded[reg_ix] = (val, new_age)
+            if new_age > 0: new_forwarded[target_register] = (result, new_age)
 
         self.forwarded = new_forwarded
 
@@ -80,15 +80,17 @@ class ID:
 
             parsed_instruction = instruction.parse()
             
-            # todo implement bypassing
+            # bypassing
             
             source_regs = parsed_instruction.fetch_source_registers()
 
-            # replacing relevant inputs
-            for source_reg in source_regs:
-                if source_reg in self.forwarded:
-                    val, age = self.forwarded[source_reg]
-                    RF[source_reg] = val
+            # print(f'decoding register {source_regs}')
+
+            # todo replacing relevant inputs
+            # for source_reg in source_regs:
+            #     if source_reg in self.forwarded:
+            #         result, age = self.forwarded[source_reg]
+            #         RF[source_reg] = result
 
             # decoding the instruction with updated register file
             decoded_instruction = parsed_instruction.read_register_file(RF)
@@ -158,8 +160,9 @@ class MEM:
                 # ! the load method fills the instruction's result field 
 
                 instruction.result = MEM[instruction.target_address]
+
+                # todo forward
        
-                #updates.append(('push', 'writeback_queue', (register_ix, MEM[target_addr])))
                 updates.append(('push', 'writeback_queue', instruction))
 
             elif instruction.opcode == 'sw':
@@ -194,7 +197,7 @@ class WB:
     
 class SimpleProcessor:
 
-    def __init__(self, program, symbols):
+    def __init__(self, program, symbols, debug=False):
         self.symbols = symbols
         self.program = program
         
@@ -228,6 +231,8 @@ class SimpleProcessor:
         self.execution_queue_history = [0] * 5
         self.memory_queue_history = [0] * 5
         self.writeback_queue_history = [0] * 5
+
+        self.debug = debug
 
    
     def resolve_labels(self):
@@ -277,6 +282,7 @@ class SimpleProcessor:
                 instruction = val
                 self.RF[instruction.target_register] = instruction.result
                 self.executed += 1
+                instruction.finished = True
 
             elif action == 'write_mem':
                 assert(isinstance(val, Instruction))
@@ -286,6 +292,9 @@ class SimpleProcessor:
                 
                 self.MEM[instruction.target_address] =  self.RF[instruction.target_register]
                 self.executed += 1
+
+                instruction.finished = True
+
 
             else: raise RuntimeError(f'Update type {action} not implemented')
 
@@ -306,6 +315,12 @@ class SimpleProcessor:
             instruction_queue=self.instruction_queue,
             execution_queue=self.execution_queue,
             )
+
+        # refetch the instruction if there is a branch
+        for action, attr, i in update_ID:
+            if action == 'set':
+                pc = i
+                update_IF = self.IF.run(PC=pc, instruction_queue=self.instruction_queue )
 
        
         update_EX = self.EX.run(
@@ -328,14 +343,11 @@ class SimpleProcessor:
 
 
         # forwarding
-        to_forward = update_EX + update_MEM
+        self.to_forward = update_EX + update_MEM
 
-        # todo iterate over to_forward and the result of every push operation to the ID by callding ID.accept_forward_registers(updates)
-        # print(to_forward)
-        # for action, attr, val in to_forward:
-        #     if action == 'push' and attr == 'writeback_queue': self.ID.accept_forward_registers(val)
-
-
+        for action, attr, i in self.to_forward:
+            if action == 'push' and i.result:
+                self.ID.bypass(pair=(i.target_register, i.result))
         
         # processor state update
         updates = update_IF + update_ID + update_EX + update_MEM + update_WB
@@ -343,9 +355,9 @@ class SimpleProcessor:
                
         self.tick(updates)
 
-        self.print_stats()
-
-        txt = input("Press enter for next cycle")
+        if self.debug:
+            self.print_stats()
+            txt = input("Press enter for next cycle")
 
     def simple_cycle(self):
         
@@ -411,7 +423,6 @@ class SimpleProcessor:
         self.executed += 1
 
 
-
     def running(self):
         return self.RF[31] != 1
 
@@ -420,14 +431,18 @@ class SimpleProcessor:
         queue_headers = ['name'] + [f'clock_{i}' for i in range(self.cycles, self.cycles + 5)]
         colors = ['green', 'bright_yellow', 'yellow', 'bright_red', 'red', 'black', 'black', 'black']
 
-        def kek(i): return click.style(
-            str(i), fg=i.colour) if isinstance(i, Instruction) else click.style(
-            str(i), fg='black')
+        def kek(i):
+            if isinstance(i, Instruction):
+                colour = i.colour if not i.finished else 'cyan'
+                return click.style(str(i), fg=colour, bold=i.finished) 
 
-        i_queue = ['INSTRUCTION_QUEUE'] + [kek(entry) for i, entry in enumerate(self.instruction_queue_history[:5])]
-        e_queue = ['EXECUTION_QUEUE'] + [kek(entry) for i, entry in enumerate(self.execution_queue_history[:5])]
-        m_queue = ['MEMORY_QUEUE'] + [kek(entry) for i, entry in enumerate(self.memory_queue_history[:5])]
-        w_queue = ['WRITEBACK_QUEUE'] + [kek(entry) for i, entry in enumerate(self.writeback_queue_history[:5])]
+            else:
+             return click.style(str(i), fg='black')
+
+        i_queue = ['FETCHED'] + [kek(entry) for i, entry in enumerate(self.instruction_queue_history[:5])]
+        e_queue = ['REGS FETCHED'] + [kek(entry) for i, entry in enumerate(self.execution_queue_history[:5])]
+        m_queue = ['MEM ACCESS'] + [kek(entry) for i, entry in enumerate(self.memory_queue_history[:5])]
+        w_queue = ['REGS UPDATED'] + [kek(entry) for i, entry in enumerate(self.writeback_queue_history[:5])]
 
         queue_data = [i_queue, e_queue, m_queue, w_queue]
 
@@ -443,7 +458,7 @@ class SimpleProcessor:
         print(f"{queue_table}\n")
 
         
-        print("\nFORWARDED REGISTERS")
+        print("\nTO FORWARD")
         print(self.ID.forwarded)
 
         print("\nREGISTER FILE")

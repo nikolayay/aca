@@ -8,12 +8,12 @@ jumps = ['j']
 
 colours = [
     "red",
-    "green",
+
     "yellow",
     "blue",
     "magenta",
     "bright_red",
-    "bright_green",
+
     "bright_yellow",
     "bright_blue",
     "bright_magenta",
@@ -37,6 +37,7 @@ class Instruction:
         self.target_address = None # for loads/stores
         self.result = None         # for arithmetic
         self.branch_target = None  # for brnaches
+        self.finished = False
         
         self.source_registers = []
         self.target_register = None
