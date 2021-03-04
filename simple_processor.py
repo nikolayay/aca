@@ -7,6 +7,7 @@ from copy import copy
 from columnar import columnar
 import numpy as np
 import click
+import sys
 
 
 from instruction import *
@@ -15,11 +16,17 @@ from instruction import *
 Instruction fetch module. Fetch next instruction, add it to the instruction queue and increment the PC for the next cycle.
 """
 class IF:
-    def __init__(self, program, symbols):
+    def __init__(self, program, symbols, debug):
+        self.debug=debug
+
         self.program = program
         self.symbols = symbols
     
-    def run(self, PC, instruction_queue):
+    def run(self, PC, instruction_queue, stalling):
+
+        if stalling:
+            return []
+
         if PC >= len(self.program): return []
         
         if (PC > len(self.program) or PC < 0): raise RuntimeError(f"PC out of bounds. PC={PC} for program of length {len(self.program)}")
@@ -36,11 +43,15 @@ class IF:
 Decode the instruction and chuck it onto the execution queue
 """
 class ID:
-    def __init__(self):
+    def __init__(self, debug):
+        self.debug = debug
+
         self.branch_target = None
         self.forwarded = {} # dictionary of recently forwarded register values
 
-        self.entry_max_age = 2
+        self.frozen_registers = {}
+
+        self.entry_max_age = 3
 
 
     # list of tuples of shape (reg_ix, val)
@@ -51,7 +62,10 @@ class ID:
     """
     We loop over all of the instructions and decrement the age, then delete ones with 0 age
     """
-    def cleanup_forward_registers(self):
+    def tick(self):
+
+        # decrement age of forwarded registers
+        
         new_forwarded = {}
         for target_register, pair in self.forwarded.items():
             result, age = pair
@@ -59,8 +73,15 @@ class ID:
 
             if new_age > 0: new_forwarded[target_register] = (result, new_age)
 
-        self.forwarded = new_forwarded
 
+        # keep all unfinished instructions
+        new_frozen_registers = {}
+        for target_register, instruction in self.frozen_registers.items():
+            if not instruction.finished:
+                new_frozen_registers[instruction.target_register] = instruction
+
+        self.forwarded = new_forwarded
+        self.frozen_registers = new_frozen_registers
 
     
     """
@@ -68,59 +89,75 @@ class ID:
     """
     def run(self, instruction_queue, RF, execution_queue):
 
-        # ? we keep the forwarded instruction for two cycles        
-        self.cleanup_forward_registers()
-
         updates = []
-        
+
+        self.tick()
+
         if (len(instruction_queue) > 0):
             # pop off instruction  queue
         
             instruction = instruction_queue[-1]
 
             parsed_instruction = instruction.parse()
-            
-            # bypassing
-            
+
+            if self.debug:
+                print(f'currently inside ID: {parsed_instruction}')
+                print(f'forwarded: {self.forwarded}')
+                print(f'frozen: {self.frozen_registers}')
+
+    
             source_regs = parsed_instruction.fetch_source_registers()
 
-            # print(f'decoding register {source_regs}')
+            # stalling
+            # if any of source registers are in the stalled dict, push a stall onto the exec queue and return
+            for source_reg in source_regs:
+                if source_reg in self.frozen_registers and source_reg not in self.forwarded:
 
-            # todo replacing relevant inputs
-            # for source_reg in source_regs:
-            #     if source_reg in self.forwarded:
-            #         result, age = self.forwarded[source_reg]
-            #         RF[source_reg] = result
+                    if self.debug: print('issuing a stall')
+                   
+                    return [], True
+
+            # bypassing
+            for source_reg in source_regs:
+                if source_reg in self.forwarded:
+                    result, age = self.forwarded[source_reg]
+                    RF[source_reg] = result
 
             # decoding the instruction with updated register file
             decoded_instruction = parsed_instruction.read_register_file(RF)
-
             assert(isinstance(instruction, Instruction))
 
             # in any case, commit the pop
             updates.append(('pop', 'instruction_queue', None))
 
-            # if this is a branch instruction, prepare to  
+            # if this is a branch instruction, say we need to increment the PC
             if (decoded_instruction.branch_target):
-                # branch condition is true, so we need to hop, otherwise we do nothing
+                
+                updates.append(('branch_executed', None, None))
+                
                 if decoded_instruction.branch_target != -1:
-
                     updates.append(('set', 'PC', decoded_instruction.branch_target))
 
-                return updates
+                decoded_instruction.finished = True
+
+                # todo count the branch instruction as executed
+
+                return updates, False
                 
-            # if this isnt a branch instruction then ww proceed with execution as normal
+            # if this isnt a branch instruction then we proceed with execution
             else:
+
+                # freeze target register
+                self.frozen_registers[decoded_instruction.target_register] = decoded_instruction
                 updates.append(('push', 'execution_queue', decoded_instruction))
 
-    
-        return updates
+
+        return updates, False
 
 
 class EX:
-    def __init__(self):
-        pass
-
+    def __init__(self, debug):
+        self.debug = debug
 
     def run(self, execution_queue, memory_queue, writeback_queue):
         updates = []
@@ -129,6 +166,8 @@ class EX:
            
             instruction = execution_queue[-1]
             computed_instruction = instruction.compute()
+
+            if self.debug: print(f'currently inside EX: {computed_instruction.instruction_string}')
 
             # updated state
             if computed_instruction.target_address is not None:
@@ -145,8 +184,8 @@ class EX:
 
 
 class MEM:
-    def __init__(self):
-        pass
+    def __init__(self, debug):
+        self.debug=debug
     def run(self, MEM, memory_queue):
         updates = []
 
@@ -175,8 +214,8 @@ class MEM:
 
         return updates
 class WB:
-    def __init__(self):
-        pass
+    def __init__(self, debug):
+        self.debug = debug
 
    
     def run(self, RF, writeback_queue):
@@ -185,6 +224,8 @@ class WB:
         if (len(writeback_queue) > 0):
            
             instruction = writeback_queue[-1]
+
+            if self.debug: print(f'currently inside WB: {instruction.instruction_string}')
 
             updates.append(('pop', 'writeback_queue', None)) 
 
@@ -214,15 +255,17 @@ class SimpleProcessor:
 
         # ? appear in the order they would in the diagram
 
-        self.IF = IF(self.program, self.symbols)
+        self.stalling=False
+
+        self.IF = IF(self.program, self.symbols, debug=debug)
         self.instruction_queue = []
-        self.ID = ID()
+        self.ID = ID(debug=debug)
         self.execution_queue = []
-        self.EX = EX()
+        self.EX = EX(debug=debug)
         self.memory_queue = []
         self.writeback_queue = []
-        self._MEM = MEM()
-        self.WB = WB()
+        self._MEM = MEM(debug=debug)
+        self.WB = WB(debug=debug)
         
         # self.WB = WB()
 
@@ -258,7 +301,7 @@ class SimpleProcessor:
 
         for action, attr, val, in updates:
             
-            current = getattr(self, attr)
+            if attr:current = getattr(self, attr)
 
             # ! keeping the history of all insgtructions for debugging
             if attr in ['instruction_queue', 'execution_queue', 'memory_queue', 'execution_queue', 'writeback_queue'] and val:
@@ -273,6 +316,7 @@ class SimpleProcessor:
                 updated = [val] + current
                 setattr(self, attr, updated)
 
+            # this will get called every instruction fetch
             elif action == 'set':
                 setattr(self, attr, val)
 
@@ -295,6 +339,9 @@ class SimpleProcessor:
 
                 instruction.finished = True
 
+            elif action == 'branch_executed':
+                self.executed += 1
+
 
             else: raise RuntimeError(f'Update type {action} not implemented')
 
@@ -302,27 +349,32 @@ class SimpleProcessor:
     def cycle_pipelined(self):
 
         self.cycles += 1
-
-        updates = []
         
-        update_IF = self.IF.run(
-            PC=self.PC, 
-            instruction_queue=self.instruction_queue            
-            )
         
-        update_ID = self.ID.run(
+        update_IF = self.IF.run(PC=self.PC, instruction_queue=self.instruction_queue, stalling=self.stalling)
+        
+        update_ID, stalling = self.ID.run(
             RF=self.RF,
             instruction_queue=self.instruction_queue,
-            execution_queue=self.execution_queue,
+            execution_queue=self.execution_queue
             )
+
+        # stall for 1 cycle
+        self.stalling = stalling
+        if stalling:
+            update_ID = []
+            update_IF = []
 
         # refetch the instruction if there is a branch
         for action, attr, i in update_ID:
             if action == 'set':
                 pc = i
-                update_IF = self.IF.run(PC=pc, instruction_queue=self.instruction_queue )
-
-       
+                # new fetch
+                update_IF = self.IF.run(PC=pc, instruction_queue=self.instruction_queue, stalling=self.stalling)
+                # do not duplicate the PC update
+                update_ID = update_ID[:-1]
+                
+            
         update_EX = self.EX.run(
             execution_queue=self.execution_queue,
             memory_queue=self.memory_queue,
@@ -330,16 +382,10 @@ class SimpleProcessor:
         )
 
 
-        update_MEM = self._MEM.run(
-            MEM=self.MEM,
-            memory_queue=self.memory_queue,
-        )
+        update_MEM = self._MEM.run(MEM=self.MEM, memory_queue=self.memory_queue)
 
 
-        update_WB = self.WB.run(
-            RF = self.RF,
-            writeback_queue=self.writeback_queue,
-        )
+        update_WB = self.WB.run(RF = self.RF, writeback_queue=self.writeback_queue)
 
 
         # forwarding
@@ -348,12 +394,19 @@ class SimpleProcessor:
         for action, attr, i in self.to_forward:
             if action == 'push' and i.result:
                 self.ID.bypass(pair=(i.target_register, i.result))
+
+           
         
         # processor state update
         updates = update_IF + update_ID + update_EX + update_MEM + update_WB
     
                
         self.tick(updates)
+        # self.ID.tick()
+
+
+        # if self.stalling: self.stalling=False
+
 
         if self.debug:
             self.print_stats()
@@ -440,7 +493,7 @@ class SimpleProcessor:
              return click.style(str(i), fg='black')
 
         i_queue = ['FETCHED'] + [kek(entry) for i, entry in enumerate(self.instruction_queue_history[:5])]
-        e_queue = ['REGS FETCHED'] + [kek(entry) for i, entry in enumerate(self.execution_queue_history[:5])]
+        e_queue = ['EXECUTION QUEUE'] + [kek(entry) for i, entry in enumerate(self.execution_queue_history[:5])]
         m_queue = ['MEM ACCESS'] + [kek(entry) for i, entry in enumerate(self.memory_queue_history[:5])]
         w_queue = ['REGS UPDATED'] + [kek(entry) for i, entry in enumerate(self.writeback_queue_history[:5])]
 
@@ -457,9 +510,11 @@ class SimpleProcessor:
         print("\nQUEUES")
         print(f"{queue_table}\n")
 
-        
         print("\nTO FORWARD")
         print(self.ID.forwarded)
+
+        print("\nFROZEN REGISTERS")
+        print(self.ID.frozen_registers)
 
         print("\nREGISTER FILE")
         print(f"{reg_table_1}{reg_table_2}\n")
