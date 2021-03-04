@@ -22,10 +22,7 @@ class IF:
         self.program = program
         self.symbols = symbols
     
-    def run(self, PC, instruction_queue, stalling):
-
-        if stalling:
-            return []
+    def run(self, PC, instruction_queue):
 
         if PC >= len(self.program): return []
         
@@ -254,9 +251,6 @@ class SimpleProcessor:
 
 
         # ? appear in the order they would in the diagram
-
-        self.stalling=False
-
         self.IF = IF(self.program, self.symbols, debug=debug)
         self.instruction_queue = []
         self.ID = ID(debug=debug)
@@ -296,7 +290,9 @@ class SimpleProcessor:
        
         self.program = clean_program
 
-
+    """
+    Updating processor state each cycle
+    """
     def tick(self, updates):
 
         for action, attr, val, in updates:
@@ -351,7 +347,7 @@ class SimpleProcessor:
         self.cycles += 1
         
         
-        update_IF = self.IF.run(PC=self.PC, instruction_queue=self.instruction_queue, stalling=self.stalling)
+        update_IF = self.IF.run(PC=self.PC, instruction_queue=self.instruction_queue)
         
         update_ID, stalling = self.ID.run(
             RF=self.RF,
@@ -360,7 +356,6 @@ class SimpleProcessor:
             )
 
         # stall for 1 cycle
-        self.stalling = stalling
         if stalling:
             update_ID = []
             update_IF = []
@@ -370,7 +365,7 @@ class SimpleProcessor:
             if action == 'set':
                 pc = i
                 # new fetch
-                update_IF = self.IF.run(PC=pc, instruction_queue=self.instruction_queue, stalling=self.stalling)
+                update_IF = self.IF.run(PC=pc, instruction_queue=self.instruction_queue)
                 # do not duplicate the PC update
                 update_ID = update_ID[:-1]
                 
@@ -390,23 +385,14 @@ class SimpleProcessor:
 
         # forwarding
         self.to_forward = update_EX + update_MEM
-
         for action, attr, i in self.to_forward:
             if action == 'push' and i.result:
                 self.ID.bypass(pair=(i.target_register, i.result))
-
-           
         
         # processor state update
         updates = update_IF + update_ID + update_EX + update_MEM + update_WB
-    
-               
         self.tick(updates)
-        # self.ID.tick()
-
-
-        # if self.stalling: self.stalling=False
-
+    
 
         if self.debug:
             self.print_stats()
