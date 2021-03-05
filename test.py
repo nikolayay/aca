@@ -48,6 +48,7 @@ for ffile in files:
                         "{:#.4f}".format(elapsed_simple), 
                         cpu_simple.cycles,
                         cpu_simple.executed,
+                        cpu_simple.num_stalls,
                         cpu_simple.executed / cpu_simple.cycles])
 
     # ! pipelined processor tests
@@ -60,16 +61,18 @@ for ffile in files:
     except: pass
 
     elapsed_pipelined = end - start
+    assert(cpu_pipelined.cycles == cpu_pipelined.num_stalls + cpu_pipelined.executed + 3)
     pipelined_data.append(
         [ffile, click.style('PASSED', fg='green') if tests[ffile]( cpu_pipelined) else click.style('FAILED', fg='red'), 
         "{:#.4f}".format(elapsed_pipelined),
          cpu_pipelined.cycles,
          cpu_pipelined.executed,
+         cpu_pipelined.num_stalls,
          cpu_pipelined.executed / cpu_pipelined.cycles])
 
    
 
-headers = ['filename', 'test result', 'elapsed (s)', 'cycles', 'instructions executed', 'instructions per cycle']
+headers = ['filename', 'test result', 'elapsed (s)', 'cycles', 'instructions executed', 'num stalls', 'instructions per cycle']
 simple_table = columnar(simple_data, headers, no_borders=True)
 pipelined_table = columnar(pipelined_data, headers, no_borders=True)
 

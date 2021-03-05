@@ -269,6 +269,8 @@ class SimpleProcessor:
         self.memory_queue_history = [0] * 5
         self.writeback_queue_history = [0] * 5
 
+        self.num_stalls = 0
+
         self.debug = debug
 
    
@@ -357,6 +359,7 @@ class SimpleProcessor:
 
         # stall for 1 cycle
         if stalling:
+            self.num_stalls += 1
             update_ID = []
             update_IF = []
 
