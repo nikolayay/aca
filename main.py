@@ -1,6 +1,7 @@
-import assembler
 import argparse
-from simple_processor import SimpleProcessor
+import assembler
+from simple_processor import SimpProcessor
+from pipelined_processor import PipelinedProcessor
 
 parser = argparse.ArgumentParser(description='Run a processor simulation for a given assembly program.')
 
@@ -26,14 +27,22 @@ except:
 
 
 instructions, symbols = assembler.assemble(program)
-cpu = SimpleProcessor(instructions, symbols, debug=args.debug)
+
+
+if args.processor_type == 'simple':
+    processor = SimpProcessor
+elif args.processor_type == 'pipelined':
+    processor = PipelinedProcessor
+else: raise RuntimeError("Processor type not implemented")
+
+
+
+cpu = processor(instructions, symbols, debug=args.debug)
 
 # print(instructions, symbols)
 
 while cpu.running():
-    if args.processor_type=='simple': cpu.simple_cycle()
-    elif args.processor_type == 'pipelined': cpu.cycle_pipelined()
-    else: raise RuntimeError("Processor type not implemented")
+    cpu.cycle()
 
 
 cpu.print_stats()
