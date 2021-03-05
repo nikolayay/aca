@@ -1,13 +1,9 @@
 
 
 import re
-from types import SimpleNamespace
-import inspect
-from copy import copy
-from columnar import columnar
-import numpy as np
-import click
 import sys
+from columnar import columnar
+import click
 
 
 from instruction import *

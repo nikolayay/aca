@@ -35,17 +35,6 @@ def resolve_labels(assembly, symbols):
         if len(fields) == 1: continue # drop just the labels
         line = line.strip() # remove whitespace 
         
-        # ! not resolving labels here cos we're mental
-        
-        # resolve labels if you're not a malloc
-        # if not fields[0].endswith(":"): 
-        #     line = [fields[0]] + [str(symbols[el]) if el in symbols else el for el in fields[1:]]
-        #     print(line)
-            # for el in fields[1:]:
-            #     if el in symbols:
-            #         el = symbols[el]   
-            #     new.append(str(el))
-
         final.append(line)
     return final
 

@@ -3,8 +3,6 @@ import argparse
 from simple_processor import SimpleProcessor
 
 parser = argparse.ArgumentParser(description='Produce a binary .dat file from a .txt assembly code')
-parser.add_argument("-v", "--verbose", help="increase output verbosity",
-                action="store_true")
 
 parser.add_argument("-f", "--file", dest="filename", required=True,
                 help="input file with MIPS assembly code",
@@ -19,8 +17,6 @@ parser.add_argument("-p", "--processor", required=True,
 parser.add_argument("-d", "--debug", dest='debug', action='store_true', default=False, help='Debug mode')
 
 args = parser.parse_args()
-if args.verbose:
-    logging.basicConfig(level=logging.DEBUG)
 
 try:
     with open(args.filename.name) as f:
