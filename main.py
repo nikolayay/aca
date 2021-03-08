@@ -1,7 +1,8 @@
 import argparse
 import assembler
-from simple_processor import SimpProcessor
+from simple_processor import SimpleProcessor
 from pipelined_processor import PipelinedProcessor
+from scheduled_processor import ScheduledProcessor
 
 parser = argparse.ArgumentParser(description='Run a processor simulation for a given assembly program.')
 
@@ -10,8 +11,8 @@ parser.add_argument("-f", "--file", dest="filename", required=True,
                 type=argparse.FileType())
 
 parser.add_argument("-p", "--processor", required=True,
-                    help="Choose the kind of processor to simulate. Currently supports simple unpipelined and stalled pipeline processors",
-                    choices=['simple', 'pipelined'],
+                    help="Choose the kind of processor to simulate.",
+                    choices=['simple', 'pipelined', 'scheduled'],
                     dest='processor_type'
                     )
 
@@ -30,9 +31,11 @@ instructions, symbols = assembler.assemble(program)
 
 
 if args.processor_type == 'simple':
-    processor = SimpProcessor
+    processor = SimpleProcessor
 elif args.processor_type == 'pipelined':
     processor = PipelinedProcessor
+elif args.processor_type == 'scheduled':
+    processor = ScheduledProcessor
 else: raise RuntimeError("Processor type not implemented")
 
 

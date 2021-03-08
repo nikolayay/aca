@@ -5,13 +5,16 @@ import click
 import time
 
 import assembler
-from simple_processor import SimpProcessor
+from simple_processor import SimpleProcessor
 from pipelined_processor import PipelinedProcessor
+from scheduled_processor import ScheduledProcessor
+
 
 
 
 files = [f"programs/{f}" for f in listdir("programs/") if isfile(join("programs/", f))]
-processors = [SimpProcessor, PipelinedProcessor]
+processors = [SimpleProcessor, PipelinedProcessor]
+names = [proc.__name__ for proc in processors]
 
 tests = {
     'programs/adds_unrolled.asm': (lambda cpu: cpu.RF[1] == 90),
@@ -28,7 +31,6 @@ tests = {
 
 simple_data = []
 pipelined_data = []
-
 tables_data = []
 
 for processor in processors:
@@ -44,10 +46,11 @@ for processor in processors:
 
         cpu = processor(instructions, symbols)
 
-
         start = time.time()
-        while cpu.running():
-            cpu.cycle()
+        try:
+            while cpu.running():
+                cpu.cycle()
+        except: pass
         end = time.time()
 
         elapsed_simple = end - start
@@ -64,8 +67,9 @@ for processor in processors:
 
 headers = ['filename', 'test result', 'elapsed (s)', 'cycles', 'instructions executed', 'num stalls', 'instructions per cycle']
 
-for table_data in tables_data:
+for table_data, proc_name in zip(tables_data, names):
     table = columnar(table_data, headers, no_borders=True)
+    print(click.style(proc_name, fg='cyan'))
     print(table)
 
 

@@ -19,7 +19,6 @@ colours = [
     "bright_magenta",
     ]
 
-
 class Instruction:
 
     def __str__(self):
@@ -68,8 +67,7 @@ class Instruction:
 
             self.operands = self.parse_operands(
                 "^(?P<rt>\$\w*) (?P<rs>\$\w*) (?P<imm>-*\d+)$")
-
-            
+  
 
         elif self.opcode in memory:
 
@@ -77,7 +75,6 @@ class Instruction:
                 "^(?P<rt>\$\w*) *(?P<imm>\w+)\((?P<rs>\$\w*|\d*)\)$")
 
             
-
         elif self.opcode in branches:
 
             self.operands = self.parse_operands(

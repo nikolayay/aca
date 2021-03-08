@@ -1,9 +1,13 @@
 from processor import Processor
 from instruction import Instruction
 
-class SimpProcessor(Processor):
+class SimpleProcessor(Processor):
     def __init__(self, program, symbols, debug=False):
         super().__init__(program, symbols, debug)
+
+        self.RF = [0] * 32
+
+
 
 
     def cycle(self):
@@ -43,7 +47,8 @@ class SimpProcessor(Processor):
             self.RF[i.target_register] = i.result
             self.executed += 1
 
-            self.cycles += 1
+        
+        self.cycles += 1
 
         # Fetch
         blank_instruction = fetch(self)
@@ -69,3 +74,8 @@ class SimpProcessor(Processor):
         # Writeback
         if computed_instruction.result is not None:
             write_back(self, computed_instruction)
+
+    def print_stats(self):
+        print(self.cycles)
+        print(self.RF)
+        print(self.MEM)
