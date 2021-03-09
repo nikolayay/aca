@@ -13,7 +13,7 @@ from scheduled_processor import ScheduledProcessor
 
 
 files = [f"programs/{f}" for f in listdir("programs/") if isfile(join("programs/", f))]
-processors = [SimpleProcessor, PipelinedProcessor]
+processors = [SimpleProcessor, PipelinedProcessor, ScheduledProcessor]
 names = [proc.__name__ for proc in processors]
 
 tests = {

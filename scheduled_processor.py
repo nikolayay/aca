@@ -454,6 +454,11 @@ class ReservationStation():
 
    
 
+class Predictor:
+    def __init__(self):
+        pass
+
+
 class Decoder:
     def __init__(self, symbols):
         self.symbols = symbols
@@ -599,6 +604,7 @@ class ScheduledProcessor(Processor):
 
         self.rf = RegisterFile()
         self.decoder = Decoder(symbols)
+        self.predictor = Predictor()
         
         self.alu = ALU()
 
@@ -616,9 +622,6 @@ class ScheduledProcessor(Processor):
         self.debug=debug
 
 
-
-    def schedule_update(update):
-        self.updates.append(update)
 
 
     def tick(self, updates):
@@ -793,7 +796,6 @@ class ScheduledProcessor(Processor):
             else: raise ValueError("Something is really wrong with the mem component")
 
 
-
         return updates
 
 
@@ -824,9 +826,8 @@ class ScheduledProcessor(Processor):
             print(rob_entry_to_commit)
 
             if rob_entry_to_commit.opcode in ['lw', 'sw']:
+                
                 lsq_entry_to_commit = self.lsq.lookup(self.lsq.commit_pointer)
-                # assert(lsq_entry_to_commit.opcode == rob_entry_to_commit.opcode)
-                print(lsq_entry_to_commit)
                 
                 if rob_entry_to_commit.opcode == 'sw':               
                     print(f'i am not going to write {rob_entry_to_commit.value} to address {lsq_entry_to_commit} which currently holds value { self.MEM[lsq_entry_to_commit.target_address]}')         
