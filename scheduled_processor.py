@@ -22,8 +22,19 @@ class Instruction:
         self.immediate = immediate
 
 
+    def writes_regs(self):
+        if self.is_store(): return False
+        elif self.is_branch(): return False
+        else: return True
+
     def is_mem(self):
         return self.opcode in ['lw', 'sw']
+
+    def is_branch(self):
+        return self.opcode in ['beq', 'bne', 'blt', 'ble', 'j']
+
+    def is_jump(self):
+        return self.opcode == 'j'
 
     def is_store(self):
         return self.opcode == 'sw'
@@ -33,7 +44,7 @@ class Instruction:
 class ReorderBufferEntry:
 
     def __str__(self):
-        return f"ROB Entry for op: {self.opcode}, dest: {self.destination}, val:{'Not ready' if self.value is False else self.value}"
+        return f"ROB Entry for op: {self.opcode}, dest: {self.destination}, val:{'Not ready' if self.value is None else self.value}"
 
     def __print__(self):
         return str(self)
@@ -41,7 +52,8 @@ class ReorderBufferEntry:
     def __init__(self, opcode, destination, value, done=False):
         self.opcode = opcode
         self.destination = destination # which architectural register we write to
-        self.value = value             # if branch then this is the value we get
+        self.value = value             # if branch then this is the result of comparison
+        self.pc = None                 # if branch then this is where we jump
         self.done = done
         # self.dispatched = False
         # self.allowed = 1
@@ -53,7 +65,7 @@ class ReorderBuffer:
 
     def __str__(self):
         data = []
-        header = ['commit pointer', 'id', 'operation', 'destination register', 'value', 'done']
+        header = ['commit pointer', 'id', 'operation', 'destination register', 'value', 'pc', 'done']
         sslice = self.entries[:6] if self.commit_pointer < 3 else self.entries[self.commit_pointer - 3 : self.commit_pointer + 3]
 
         for i, e in enumerate(sslice):
@@ -61,7 +73,7 @@ class ReorderBuffer:
             if e is None: data.append(['empty'] * len(header))
             else: 
                 pointer = '->' if e.id == self.commit_pointer else ''
-                data.append([pointer, e.id, e.opcode, e.destination, e.value, e.done])
+                data.append([pointer, e.id, e.opcode, e.destination, e.value, e.pc, e.done])
 
         rob_table = columnar(data, header, no_borders=True)
 
@@ -78,17 +90,21 @@ class ReorderBuffer:
         return self.entries[ix]
 
     def is_available(self):
-        occupied = len([e for e in self.entries if e and e.destination])
+        occupied = len([e for e in self.entries if e is not None and e.destination])
         return occupied < len(self.entries) - 1
 
-    def add(self, instruction: Instruction) -> Tuple[ReorderBufferEntry, int]:
+    def add(self, instruction: Instruction, pc:int) -> Tuple[ReorderBufferEntry, int]:
         
-        destination = 32 if instruction.is_store() else instruction.target_register
+        destination = 32 if instruction.is_store() or instruction.is_branch() else instruction.target_register # dummy value if needed
+
 
         entry = ReorderBufferEntry(opcode=instruction.opcode, 
-                                   destination=destination, 
-                                   value=None, 
-                                   done=False)
+                                    destination=destination, 
+                                    value=None, 
+                                    done=False)
+
+        if instruction.is_branch(): entry.pc = instruction.immediate
+        else: entry.pc = pc + 1
 
         entry.id = self.issue_pointer
         self.entries[self.issue_pointer] = entry
@@ -114,7 +130,7 @@ class ReorderBuffer:
     def can_commit(self):
         first = self.entries[self.commit_pointer]
 
-        if not first: return False
+        if first is None: return False
 
         return first.done
 
@@ -165,7 +181,6 @@ class RegisterFile:
     def remap(self, target_register:int, rob_entry_pointer: int):
         self.RAT[target_register] = rob_entry_pointer
 
-
     def commit(self, rob_entry: ReorderBufferEntry, rob_commit_pointer: int):
         if not rob_entry.done: raise ValueError("BAD ROB Entry")
        
@@ -174,23 +189,26 @@ class RegisterFile:
         # remove mapping if RAT points at the entry we are committing
         if self.RAT[rob_entry.destination] == rob_commit_pointer:
             self.RAT[rob_entry.destination] = None
-        
-        
-        
+                
     def read_registers(self, instruction: Instruction, ROB: ReorderBuffer):
 
+       
         s1 = instruction.source_reg1
         s2 = instruction.source_reg2
 
         t1, v1 = self.read(s1, ROB) # get either a tag or a value
 
-        if not s2:
+
+        if s2 is None:
+            if instruction.is_branch(): raise RuntimeError('this is fucked')
             return (t1, None, v1, instruction.immediate)
 
         else:
             t2, v2 = self.read(s2, ROB)
             return (t1, t2, v1, v2)
 
+    def reset_mappings(self):
+        self.RAT = [None] * 33
 
    
 
@@ -258,9 +276,6 @@ class LoadStoreQueue():
 
         return f'LOAD STORE QUEUE\n{lsq_table}'
 
-
-
-
     def __init__(self):
         self.entries = [None] * 32
         self.commit_pointer = 0
@@ -305,7 +320,7 @@ class LoadStoreQueue():
                                         value=None)
 
         if instruction.opcode == 'sw':
-            print(instruction)
+            
             if instruction.target_register is not None and instruction.source_reg1 is None or instruction.source_reg2 is None: 
                 raise RuntimeError('sw parsed incorrectly')
 
@@ -378,7 +393,7 @@ class LoadStoreQueue():
 class ReservationStationEntry:
 
     def __str__(self):
-        return f"RS Entry for op: {self.opcode}, rob_tag: {self.dest_tag},2: {self.tag1}, tag2: {self.tag2}, val1: {self.val1}, val2: {self.val2}"
+        return f"RS Entry for op: {self.opcode}, rob_tag: {self.dest_tag}, tag1: {self.tag1}, tag2: {self.tag2}, val1: {self.val1}, val2: {self.val2}"
 
     def __print__(self):
         return str(self)
@@ -427,9 +442,16 @@ class ReservationStation():
 
 
     def add(self, instruction:Instruction, rob_pointer:int, RF: RegisterFile, ROB: ReorderBuffer):
-        t1, t2, v1, v2 = RF.read_registers(instruction, ROB)
-
-        entry = ReservationStationEntry(instruction.opcode, rob_pointer, t1, t2, v1, v2)
+        
+        # if instruction.is_branch():
+        #     entry = ReservationStationEntry(
+        #         instruction.opcode, rob_pointer, None, None, 0, 0)
+        # else:
+        if instruction.is_jump():
+            entry = ReservationStationEntry(instruction.opcode, rob_pointer, None, None, 0, 0)
+        else:
+            t1, t2, v1, v2 = RF.read_registers(instruction, ROB)
+            entry = ReservationStationEntry(instruction.opcode, rob_pointer, t1, t2, v1, v2)
 
         # loop over and look for empty slot
         if None in self.entries:
@@ -456,7 +478,55 @@ class ReservationStation():
 
 class Predictor:
     def __init__(self):
-        pass
+        self.predicted_pc = None
+        self.predict = self.not_taken
+
+
+    def not_taken(self, pc):
+        self.predicted_pc = pc + 1
+
+        return self.predicted_pc
+
+  
+
+
+    def check(self, rob_entry: ReorderBufferEntry):
+        taken = bool(rob_entry.value)
+        correct_pc = rob_entry.pc
+
+
+        print(self.predicted_pc == correct_pc)
+        
+        return bool(rob_entry.value) 
+        # print(rob_entry)
+        # # can access raw registers since everyhtong has been committed
+        # if rob_entry.opcode == 'beq':
+        #     # if (self.rs == self.rt):
+        #     #     self.branch_target = self.imm
+        #     # else:
+        #     #     self.branch_target = -1
+        #     raise RuntimeError('beq not implemented')
+
+        # elif rob_entry.opcode == 'blt':
+        #     print(rob_entry)
+        #     raise RuntimeError('blt not implemented')
+
+        # elif rob_entry.opcode == 'ble':
+        #     # if (self.rs <= self.rt):
+        #     #     self.branch_target = self.imm
+        #     # else:
+        #     #     self.branch_target = -1
+        #     raise RuntimeError('ble not implemented')
+
+        # elif rob_entry.opcode == 'j':
+        #     # self.branch_target = self.imm
+        #     raise RuntimeError('jump not implemented')
+
+
+        # else:
+        #     raise RuntimeError(
+        #         f"Branch evaluate of {rob_entry.opcode} -> Not implemented")
+        # raise RuntimeError("check not implemented")
 
 
 class Decoder:
@@ -536,6 +606,8 @@ class Decoder:
 
 
     def parse_operands(self, operand_str, pattern):
+
+
         match = re.match(pattern, operand_str)
         
         if not match:
@@ -553,6 +625,15 @@ class Decoder:
                 operands[k] = int(v)
 
         return operands
+
+    @staticmethod
+    def is_mem(opcode: str):
+        return opcode in ['lw', 'sw']
+
+    @staticmethod
+    def is_branch(opcode: str):
+        return opcode in ['beq', 'bne', 'blt', 'ble', 'j']
+        
 
 class ALU:
 
@@ -587,6 +668,25 @@ class ALU:
 
         elif opcode == 'addi':
             result = rs_entry.val1 + rs_entry.val2
+
+        elif opcode in ['beq', 'bne', 'blt', 'ble', 'j']:
+            if opcode == 'blt':
+                result = bool(rs_entry.val1 < rs_entry.val2)
+                # raise RuntimeError(f'{opcode} not implementedddd')
+
+            elif opcode == 'beq':
+                result = bool(rs_entry.val1 == rs_entry.val2)
+
+            elif opcode == 'ble':
+                result = bool(rs_entry.val1 <= rs_entry.val2)
+                # raise RuntimeError(f'{opcode} not implementedddd')
+
+            elif opcode == 'j':
+                result = True  # always taken
+                
+            else: raise RuntimeError(f'{opcode} not implemented')
+            
+           
 
         else:
             raise RuntimeError(f"You are not supposed to perform ALU operation on operation {opcode}")
@@ -668,7 +768,10 @@ class ScheduledProcessor(Processor):
 
         mem_update       = self.mem()
 
-        writeback_update = self.writeback()
+        writeback_update, flushing_flag = self.writeback()
+
+        # flushed the pipeline, update nothing
+        if flushing_flag: return
 
 
         updates = fetch_update + decode_update + issue_update + dispatch_update + execute_update + mem_update + writeback_update
@@ -696,8 +799,9 @@ class ScheduledProcessor(Processor):
         if (self.PC > len(self.program) or self.PC < 0): raise RuntimeError( f"PC out of bounds. PC={self.PC} for program of length {len(self.program)}")
         
         instruction_string = self.program[self.PC]
+        predicted_pc = self.predictor.predict(self.PC)
 
-        return [('push', 'decode_queue', instruction_string), ('set', 'PC', self.PC + 1)]
+        return [('push', 'decode_queue', instruction_string), ('set', 'PC', predicted_pc)]
 
     def decode(self):
         
@@ -726,18 +830,18 @@ class ScheduledProcessor(Processor):
             updates += [('pop', 'issue_queue', None)]
 
             # add to rob
-            rob_entry, rob_pointer = self.rob.add(instruction)
+            rob_entry, rob_entry_pointer = self.rob.add(instruction, self.PC)
 
             # add to reservation station
             if instruction.is_mem():
-                lsq_entry = self.lsq.add(instruction, rob_pointer, self.rf, self.rob)
+                lsq_entry = self.lsq.add(instruction, rob_entry_pointer, self.rf, self.rob)
             else:
-                rs_entry = self.rs.add(instruction, rob_pointer, self.rf, self.rob)
+                rs_entry = self.rs.add(instruction, rob_entry_pointer, self.rf, self.rob)
 
 
             # rename accordingly
-            if instruction.opcode != 'sw':
-                self.rf.remap(instruction.target_register, rob_pointer)
+            if instruction.writes_regs():
+                self.rf.remap(instruction.target_register, rob_entry_pointer)
 
         return updates
 
@@ -812,9 +916,6 @@ class ScheduledProcessor(Processor):
             # 1. broadcast the finished value to the reservation station and lsq
             if result is not None: self.broadcast(rob_tag, result)
 
-            print(f'RESULT: {result}')
-            print(f'marking tag {rob_tag} as done for entry {self.rob.entries[rob_tag]}')
-
             # mark rob entry as done and hydrate the value
             self.rob.done(rob_tag, result)
 
@@ -822,19 +923,26 @@ class ScheduledProcessor(Processor):
         if self.rob.can_commit():
             rob_entry_to_commit = self.rob.lookup(self.rob.commit_pointer)
 
-            print("COMMITTING:")
-            print(rob_entry_to_commit)
-
-            if rob_entry_to_commit.opcode in ['lw', 'sw']:
+            # memory operations
+            if Decoder.is_mem(rob_entry_to_commit.opcode):
                 
                 lsq_entry_to_commit = self.lsq.lookup(self.lsq.commit_pointer)
                 
-                if rob_entry_to_commit.opcode == 'sw':               
-                    print(f'i am not going to write {rob_entry_to_commit.value} to address {lsq_entry_to_commit} which currently holds value { self.MEM[lsq_entry_to_commit.target_address]}')         
-                    self.MEM[lsq_entry_to_commit.target_address] = rob_entry_to_commit.value
+                # stores get put to writeback queue in mem cycle
+                if rob_entry_to_commit.opcode == 'sw': self.MEM[lsq_entry_to_commit.target_address] = rob_entry_to_commit.value
 
                 self.lsq.free()
 
+            # branches and jumps
+            if Decoder.is_branch(rob_entry_to_commit.opcode):
+                taken = self.predictor.check(rob_entry_to_commit)
+                
+                if taken:
+                    self.flush_pipeline(pc=rob_entry_to_commit.pc)
+                    return [], True
+
+
+            # everything else
             self.rf.commit(rob_entry_to_commit, self.rob.commit_pointer)
 
             # free the rob entry and increment commit pointer
@@ -843,21 +951,42 @@ class ScheduledProcessor(Processor):
             self.executed += 1
             
 
-        return updates
+        return updates, False
 
 
     def broadcast(self, tag, value):
         # call the capture methods of the queues
         self.rs.capture(tag, value)
         self.lsq.capture(tag, value)
-        #todo lsq capture
-        
 
+        
 
     def running(self):
         v = self.rf.ARF[31]
 
         return v != 1
+
+    def flush_pipeline(self, pc):
+        # reset everything
+        self.rf.reset_mappings()
+        self.decode_queue = []
+        self.issue_queue = []
+        self.execute_queue = []
+        self.mem_queue = []
+
+        self.writeback_queue = []
+
+        self.rob = ReorderBuffer()
+        self.rs = ReservationStation()
+        self.lsq = LoadStoreQueue()
+
+
+        # set the pc
+        self.PC = pc
+
+        # increment executed to count the branch
+        self.executed += 1
+
 
     def print_stats(self):
         print(f'CYCLE: {self.cycles}')
