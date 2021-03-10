@@ -235,7 +235,7 @@ class WB:
 
 
 class PipelinedProcessor(Processor):
-    def __init__(self, program, symbols, debug=False):
+    def __init__(self, program, symbols, prediction_method=None, instructions_per_cycle=1, debug=False):
         super().__init__(program, symbols, debug)
 
         self.RF = [0] * 32

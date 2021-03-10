@@ -14,12 +14,13 @@ class Instruction:
     def __print__(self):
         return str(self.opcode)
 
-    def __init__(self, opcode, target_register, source_reg1, source_reg2, immediate):
+    def __init__(self, opcode, target_register, source_reg1, source_reg2, immediate, fetched_at_pc):
         self.opcode = opcode
         self.target_register = target_register
         self.source_reg1 = source_reg1
         self.source_reg2 = source_reg2
         self.immediate = immediate
+        self.fetched_at_pc = fetched_at_pc
 
 
     def writes_regs(self):
@@ -49,11 +50,12 @@ class ReorderBufferEntry:
     def __print__(self):
         return str(self)
 
-    def __init__(self, opcode, destination, value, done=False):
+    def __init__(self, opcode, destination, value, fetched_at_pc, done=False):
         self.opcode = opcode
         self.destination = destination # which architectural register we write to
         self.value = value             # if branch then this is the result of comparison
-        self.pc = None                 # if branch then this is where we jump
+        self.fetched_at_pc = fetched_at_pc
+        self.pc = None                 # the place in the program from where we should fetch the next instruction
         self.done = done
         # self.dispatched = False
         # self.allowed = 1
@@ -66,7 +68,7 @@ class ReorderBuffer:
     def __str__(self):
         data = []
         header = ['commit pointer', 'id', 'operation', 'destination register', 'value', 'pc', 'done']
-        sslice = self.entries[:6] if self.commit_pointer < 3 else self.entries[self.commit_pointer - 3 : self.commit_pointer + 3]
+        sslice = self.entries[:18] if self.commit_pointer < 9 else self.entries[self.commit_pointer - 3 : self.commit_pointer + 9]
 
         for i, e in enumerate(sslice):
 
@@ -90,8 +92,9 @@ class ReorderBuffer:
         return self.entries[ix]
 
     def is_available(self):
+        return True
         occupied = len([e for e in self.entries if e is not None and e.destination])
-        return occupied < len(self.entries) - 1
+        return occupied < len(self.entries) 
 
     def add(self, instruction: Instruction, pc:int) -> Tuple[ReorderBufferEntry, int]:
         
@@ -101,10 +104,12 @@ class ReorderBuffer:
         entry = ReorderBufferEntry(opcode=instruction.opcode, 
                                     destination=destination, 
                                     value=None, 
+                                    fetched_at_pc = instruction.fetched_at_pc,
                                     done=False)
-
+                                    
+        # note down the next pc we should fetch after this instruction
         if instruction.is_branch(): entry.pc = instruction.immediate
-        else: entry.pc = pc + 1
+        else: entry.pc = instruction.fetched_at_pc + 1
 
         entry.id = self.issue_pointer
         self.entries[self.issue_pointer] = entry
@@ -139,7 +144,7 @@ class ReorderBuffer:
     """
     def free(self):
 
-        #self.entries[self.commit_pointer] = None
+        # self.entries[self.commit_pointer] = None
 
 
         self.commit_pointer += 1
@@ -230,18 +235,35 @@ class LoadStoreQueueEntry:
         self.tag_base = tag_base
         self.base = base
 
-        # for stores only
         self.tag_value = tag_value # the register from which we store or its tag
-        self.value = value
+        self.value = value         # the value to store/load
 
         # metadata
         self.dispatched = False
         self.id = None
         
 
-    def is_ready(self):
-        if self.opcode == 'lw': return self.target_address is not None and not self.dispatched
-        elif self.opcode == 'sw': return self.target_address is not None and not self.dispatched and self.value is not None
+    def is_ready(self, queue):
+        # load is ready if there are no previous stores in the queue with the same address
+        # or if
+        if self.opcode == 'lw':
+           
+            # see if there is any previous stores with a matching address
+            prev_stores = [e for e in queue[:self.id]
+                            if e is not None and e.target_address == self.target_address and e.opcode == 'sw']
+            
+            # if there are no previous stores we need to hit the memory if we have an address
+            if not prev_stores:
+                return self.target_address is not None and not self.dispatched
+            
+            # todo otherwise we wait for an address to be forwarded to us
+            else:
+                return self.target_address is not None and not self.dispatched and self.value is not None
+
+        # store is ready when it has an address and a value to put into that address
+        elif self.opcode == 'sw': 
+            return self.target_address is not None and not self.dispatched and self.value is not None
+        
         else: raise RuntimeError('oh god!')
        
         
@@ -270,7 +292,7 @@ class LoadStoreQueue():
             if e is None: data.append( ['x'] + (['empty'] * 11))
             else: 
                 pointer = '->' if e.id == self.commit_pointer else ''
-                data.append([pointer, e.id, e.opcode, e.dest_tag, e.target_address, e.offset, e.tag_base, e.base, e.tag_value, e.value, e.is_ready(), e.dispatched])
+                data.append([pointer, e.id, e.opcode, e.dest_tag, e.target_address, e.offset, e.tag_base, e.base, e.tag_value, e.value, e.is_ready(self.entries), e.dispatched])
 
         lsq_table = columnar(data, header, no_borders=True)
 
@@ -281,6 +303,15 @@ class LoadStoreQueue():
         self.commit_pointer = 0
         self.issue_pointer = 0
 
+   
+    # performs load store forwarding
+    def forward_store(self, lsq_entry_to_commit: LoadStoreQueueEntry, value):
+        next_entries = [e for e in self.entries[lsq_entry_to_commit.id:] if e is not None and e.opcode == 'lw']
+        
+        for e in next_entries:
+            if e.target_address == lsq_entry_to_commit.target_address:
+                e.value = value
+
     
     """
     This can hydrate the base and produce a target address or a value for the store instruction
@@ -288,11 +319,12 @@ class LoadStoreQueue():
     def capture(self, tag, value):
         # iterate over the entries, check both tags and set the correspoding value, while unsetting the tag
         for e in [e for e in self.entries if e is not None]:
-            if e.tag_base == tag: 
-                e.target_address = value + e.offset
-
+            if e.tag_base is not None and e.tag_value is not None and e.tag_base == e.tag_value: raise RuntimeError('Tags match, reimplement')
+            
             if e.opcode == 'sw' and e.tag_value == tag:
                 e.value = value
+            if e.tag_base == tag: 
+                e.target_address = value + e.offset
 
 
     def lookup(self, ix):
@@ -360,9 +392,27 @@ class LoadStoreQueue():
 
         return entry
 
+    # sometimes loads are added to the queue after the stores have comitted. we need to try to hydrate every store on the queue
+    def hydrate_loads(self):
+        # for every uncommitted load, call hydrate with preious store
+        loads = [e for e in self.entries if e is not None and e.opcode == 'lw' and e.id >= self.commit_pointer]
+
+        for load in loads:
+            prev_stores = [e for e in self.entries[: load.id] if e is not None and e.opcode == 'sw']
+            
+            if prev_stores:
+                for store in prev_stores:
+                    if load.target_address == store.target_address:
+                        load.value = store.value
+
+            #self.forward_store(load, load.value)
+
+
 
     def get_next_ready(self):
-        ready_entry_ixs = [i for i, e in enumerate(self.entries) if e is not None and e.is_ready()]
+        self.hydrate_loads()
+
+        ready_entry_ixs = [i for i, e in enumerate(self.entries) if e is not None and e.is_ready(self.entries)]
 
         if not ready_entry_ixs: return None
 
@@ -477,23 +527,48 @@ class ReservationStation():
    
 
 class Predictor:
-    def __init__(self):
+    def __init__(self, prediction_method:str):
         self.predicted_pc = None
-        self.predict = self.not_taken
+
+        self.prediction_method = prediction_method
+        self.predict = getattr(self, prediction_method)
 
         self.predicted = 0
         self.misses = 0
 
+        self.btb: Dict[int,int] = {}
+
 
     def not_taken(self, pc):
-        self.predicted_pc = pc + 1
-        self.predicted += 1
 
-        return self.predicted_pc
+        predicted_pc = pc + 1
+
+        # record
+        self.btb[pc] = predicted_pc
+
+        return predicted_pc
+
+    def taken(self, pc):
+        raise RuntimeError('not implemented')
+
+    def one_bit(self, pc):
+        
+        predicted_pc = pc + 1
+        next_pc = self.btb[pc] if pc in self.btb else predicted_pc
+
+        # print(f'predicting {next_pc} for instuction at pc {pc}')
+
+        # record
+        self.btb[pc] = next_pc
+
+        return next_pc
+
+    def two_bit(self, pc):
+        raise RuntimeError('not implemented')
 
 
     def prediction_accuracy(self):
-        print(f'total predicted: {self.predicted}')
+        if self.predicted == 0: return 1
         return 1 - (self.misses / self.predicted)
 
     
@@ -502,52 +577,60 @@ class Predictor:
     #     return rob_entry.pc == self.predicted_pc
 
 
-        
-
-
     def check(self, rob_entry: ReorderBufferEntry):
-        taken = bool(rob_entry.value)
-        correct_pc = rob_entry.pc
-
-        if self.predicted_pc != correct_pc: self.misses += 1
         
-        return bool(rob_entry.value) 
-        # print(rob_entry)
-        # # can access raw registers since everyhtong has been committed
-        # if rob_entry.opcode == 'beq':
-        #     # if (self.rs == self.rt):
-        #     #     self.branch_target = self.imm
-        #     # else:
-        #     #     self.branch_target = -1
-        #     raise RuntimeError('beq not implemented')
+        # if this is a branch we could have been wrong
+        if Decoder.is_branch(rob_entry.opcode):
 
-        # elif rob_entry.opcode == 'blt':
-        #     print(rob_entry)
-        #     raise RuntimeError('blt not implemented')
-
-        # elif rob_entry.opcode == 'ble':
-        #     # if (self.rs <= self.rt):
-        #     #     self.branch_target = self.imm
-        #     # else:
-        #     #     self.branch_target = -1
-        #     raise RuntimeError('ble not implemented')
-
-        # elif rob_entry.opcode == 'j':
-        #     # self.branch_target = self.imm
-        #     raise RuntimeError('jump not implemented')
+            self.predicted += 1
 
 
-        # else:
-        #     raise RuntimeError(
-        #         f"Branch evaluate of {rob_entry.opcode} -> Not implemented")
-        # raise RuntimeError("check not implemented")
+            # rob values for branches contain the boolean result of the branch condition
+            taken = bool(rob_entry.value)
+
+
+            if taken:
+                correct_pc = rob_entry.pc
+            else:
+                correct_pc = rob_entry.fetched_at_pc + 1
+            
+            # have we made the correct prediction
+            success = correct_pc == self.btb[rob_entry.fetched_at_pc]
+
+            print(f'taken branch?: {taken}')
+            print(f'prediction success {success}')
+            print(rob_entry)
+
+        
+
+            if not success:
+                self.misses += 1
+                
+                if self.prediction_method == 'one_bit':
+
+                    # print(f'branch at pc: {rob_entry.fetched_at_pc}, predicted: {self.btb[rob_entry.fetched_at_pc]}, should have been: {correct_pc}')
+                    self.btb[rob_entry.fetched_at_pc] = correct_pc
+
+                    
+                    
+
+            # # if our brediction at that pc was wrong then record the miss 
+            # # FIXME this is nonsense right now
+            # if self.predicted_pc != correct_pc: self.misses += 1
+            
+            # we return the condition because of the default non taken scheme. we should return the result of the check
+            return success, correct_pc
+        
+        # otherwise we are always predicting correctly
+       
+        return True, None
 
 
 class Decoder:
     def __init__(self, symbols):
         self.symbols = symbols
     
-    def decode(self, instruction_string: str)-> Instruction:
+    def decode(self, instruction_string: str, fetched_at_pc:int)-> Instruction:
         
         # separate opcode and operand string
         opcode = instruction_string.split()[0]
@@ -555,7 +638,7 @@ class Decoder:
 
         target_register, source_registers, immediate = self.fetch_register_names(opcode, operand_str)
 
-        return Instruction(opcode, target_register, source_registers[0], source_registers[1], immediate)
+        return Instruction(opcode, target_register, source_registers[0], source_registers[1], immediate, fetched_at_pc)
 
 
     def fetch_register_names(self, opcode, operand_str):
@@ -711,14 +794,14 @@ class ALU:
 
 
 class ScheduledProcessor(Processor):
-    def __init__(self, program, symbols, debug=False):
+    def __init__(self, program, symbols, prediction_method, instructions_per_cycle=1, debug=False):
         super().__init__(program, symbols, debug)
 
         self.RF = [0] * 33
 
         self.rf = RegisterFile()
         self.decoder = Decoder(symbols)
-        self.predictor = Predictor()
+        self.predictor = Predictor(prediction_method)
         
         self.alu = ALU()
 
@@ -733,6 +816,8 @@ class ScheduledProcessor(Processor):
         self.rs  = ReservationStation()
         self.lsq = LoadStoreQueue()
 
+        self.instructions_per_cycle = instructions_per_cycle
+
         self.debug=debug
 
 
@@ -745,10 +830,7 @@ class ScheduledProcessor(Processor):
             current = getattr(self, attr)
 
             if action == 'pop':
-                # print(f'popping off {attr}')
-                # print(current)
-                # print(updated)
-                
+               
                 updated = current[:-1]
                 setattr(self, attr, updated)
 
@@ -772,7 +854,7 @@ class ScheduledProcessor(Processor):
 
         updates = []
 
-        for _ in range(1):
+        for _ in range(self.instructions_per_cycle):
 
             fetch_update     = self.fetch()
 
@@ -819,7 +901,7 @@ class ScheduledProcessor(Processor):
         instruction_string = self.program[self.PC]
         predicted_pc = self.predictor.predict(self.PC)
 
-        return [('push', 'decode_queue', instruction_string), ('set', 'PC', predicted_pc)]
+        return [('push', 'decode_queue', (instruction_string, self.PC)), ('set', 'PC', predicted_pc)]
 
     def decode(self):
         
@@ -828,10 +910,12 @@ class ScheduledProcessor(Processor):
         if (len(self.decode_queue) > 0):
            
             # parse the instruction string, compose and return an instance of the instruction class with the fields
-            instruction_string = self.decode_queue[-1]
+            instruction_string, fetched_at_pc = self.decode_queue[-1]
             updates += [('pop', 'decode_queue', None)]
 
-            instruction = self.decoder.decode(instruction_string)
+
+            # note down the predicted pc
+            instruction = self.decoder.decode(instruction_string, fetched_at_pc)
 
             updates += [('push', 'issue_queue', instruction)]
         
@@ -840,6 +924,7 @@ class ScheduledProcessor(Processor):
     def issue(self):
         updates = []
         
+
         # if we have an available ROB and available RS entry
         if (len(self.issue_queue) > 0) and self.rob.is_available():
            
@@ -849,7 +934,6 @@ class ScheduledProcessor(Processor):
 
             # add to rob
             rob_entry, rob_entry_pointer = self.rob.add(instruction, self.PC)
-
             # add to reservation station
             if instruction.is_mem():
                 lsq_entry = self.lsq.add(instruction, rob_entry_pointer, self.rf, self.rob)
@@ -908,8 +992,26 @@ class ScheduledProcessor(Processor):
             rob_tag = lsq_entry.dest_tag
 
             if lsq_entry.opcode == 'lw':
-                result = self.MEM[lsq_entry.target_address]
-                updates += [('push', 'writeback_queue', (rob_tag, result))]
+                
+                # hit memory if we have to
+                if lsq_entry.value is None:
+                    # loading 
+                    # fetching outside of memory due to branch misprediction, ignore this because we flush in a couple of cycles
+                    if lsq_entry.target_address >= len(self.MEM):
+                        result = -30
+                    else:
+                        result = self.MEM[lsq_entry.target_address]
+                    
+                    updates += [('push', 'writeback_queue', (rob_tag, result))]
+                
+                # or we just pass the value straight up
+                else:
+                    updates += [('push', 'writeback_queue', (rob_tag, lsq_entry.value))]
+
+
+                    
+
+
 
             elif lsq_entry.opcode == 'sw':
 
@@ -939,28 +1041,36 @@ class ScheduledProcessor(Processor):
 
 
         if self.rob.can_commit():
+            
             rob_entry_to_commit = self.rob.lookup(self.rob.commit_pointer)
 
-            # memory operations
+            # checking the branch predictor
+            success, correct_pc = self.predictor.check(rob_entry_to_commit)
+
+            if not success:
+                print("FLUSHING")
+                self.flush_pipeline(pc=correct_pc)
+                return [], True
+
+
+            # committing memory operations
             if Decoder.is_mem(rob_entry_to_commit.opcode):
                 
                 lsq_entry_to_commit = self.lsq.lookup(self.lsq.commit_pointer)
                 
                 # stores get put to writeback queue in mem cycle
-                if rob_entry_to_commit.opcode == 'sw': self.MEM[lsq_entry_to_commit.target_address] = rob_entry_to_commit.value
+                if rob_entry_to_commit.opcode == 'sw':
+                    # perform the store
+                    self.MEM[lsq_entry_to_commit.target_address] = rob_entry_to_commit.value
+                    
+                    # notify all the loads with matching address of the value, this allows them to dispatch
+                    self.lsq.forward_store(lsq_entry_to_commit, rob_entry_to_commit.value)
 
                 self.lsq.free()
 
-            # branches and jumps
-            if Decoder.is_branch(rob_entry_to_commit.opcode):
-                taken = self.predictor.check(rob_entry_to_commit)
-                
-                if taken:
-                    self.flush_pipeline(pc=rob_entry_to_commit.pc)
-                    return [], True
+            
 
-
-            # everything else
+            # committing everything else
             self.rf.commit(rob_entry_to_commit, self.rob.commit_pointer)
 
             # free the rob entry and increment commit pointer
@@ -1020,4 +1130,7 @@ class ScheduledProcessor(Processor):
 
         print(self.rf)
 
-        print(self.writeback_queue)
+
+
+
+        print({i:line for i, line in enumerate(self.program)})

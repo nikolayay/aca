@@ -22,5 +22,4 @@ for:
     addi $1 $1 1            ; i++
     blt $1 $0 for         ; if (i < n) for loop again
 
-for_done:
     addi $31 $31 1          ; set register 31 to 1 (halt)
