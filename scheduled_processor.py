@@ -481,21 +481,35 @@ class Predictor:
         self.predicted_pc = None
         self.predict = self.not_taken
 
+        self.predicted = 0
+        self.misses = 0
+
 
     def not_taken(self, pc):
         self.predicted_pc = pc + 1
+        self.predicted += 1
 
         return self.predicted_pc
 
-  
+
+    def prediction_accuracy(self):
+        print(f'total predicted: {self.predicted}')
+        return 1 - (self.misses / self.predicted)
+
+    
+    # def kek(self, rob_entry: ReorderBufferEntry):
+    #     print(rob_entry, self.predicted_pc)
+    #     return rob_entry.pc == self.predicted_pc
+
+
+        
 
 
     def check(self, rob_entry: ReorderBufferEntry):
         taken = bool(rob_entry.value)
         correct_pc = rob_entry.pc
 
-
-        print(self.predicted_pc == correct_pc)
+        if self.predicted_pc != correct_pc: self.misses += 1
         
         return bool(rob_entry.value) 
         # print(rob_entry)
@@ -756,27 +770,31 @@ class ScheduledProcessor(Processor):
     def cycle(self):
         self.cycles += 1
 
-        fetch_update     = self.fetch()
+        updates = []
 
-        decode_update    = self.decode()
+        for _ in range(1):
 
-        issue_update     = self.issue()
+            fetch_update     = self.fetch()
 
-        dispatch_update  = self.dispatch()
+            decode_update    = self.decode()
 
-        execute_update   = self.execute()
+            issue_update     = self.issue()
 
-        mem_update       = self.mem()
+            dispatch_update  = self.dispatch()
 
-        writeback_update, flushing_flag = self.writeback()
+            execute_update   = self.execute()
 
-        # flushed the pipeline, update nothing
-        if flushing_flag: return
+            mem_update       = self.mem()
 
+            writeback_update, flushing_flag = self.writeback()
 
-        updates = fetch_update + decode_update + issue_update + dispatch_update + execute_update + mem_update + writeback_update
+            # flushed the pipeline, update nothing
+            if flushing_flag: return
 
-        self.tick(updates)
+            updates = fetch_update + decode_update + issue_update + dispatch_update + execute_update + mem_update + writeback_update
+
+            self.tick(updates)
+        
         self.RF = self.rf.ARF
 
         if self.debug:
