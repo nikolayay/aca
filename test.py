@@ -13,16 +13,14 @@ from scheduled_processor import ScheduledProcessor
 
 from tests import tests
 
-parser = argparse.ArgumentParser(
-    description="Run the test suite for all programs"
-)
+parser = argparse.ArgumentParser(description="Run the test suite for all programs")
 
 parser.add_argument(
     "-s",
     required=True,
     help="Superscalar factor",
     type=int,
-    dest='instructions_per_cycle'
+    dest="instructions_per_cycle",
 )
 
 parser.add_argument(
@@ -35,7 +33,6 @@ parser.add_argument(
 )
 
 args = parser.parse_args()
-
 
 
 files = [k for k in tests.keys()]
@@ -55,15 +52,17 @@ for processor in progressbar(processors):
         instructions, symbols = assembler.assemble(program)
 
         cpu = processor(
-            instructions, symbols, prediction_method=args.prediction_method, instructions_per_cycle=args.instructions_per_cycle
+            instructions,
+            symbols,
+            prediction_method=args.prediction_method,
+            instructions_per_cycle=args.instructions_per_cycle,
         )
 
         start = time.time()
-        try:
-            while cpu.running():
-                cpu.cycle()
-        except:
-            pass
+
+        while cpu.running():
+            cpu.cycle()
+
         end = time.time()
 
         elapsed_simple = end - start

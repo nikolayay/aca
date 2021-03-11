@@ -656,6 +656,8 @@ class Predictor:
         self.bht: List[int] = [0] * 1024
         self.bht_two_bit: List[int] = [0] * 1024
 
+        self.branch_distances = []
+
     def not_taken(self, pc):
 
         predicted_pc = pc + 1
@@ -673,11 +675,11 @@ class Predictor:
         next_pc = pc + 1
 
         bit = self.bht[pc]
-        
+
         # if set then return the btb
         if bit:
             next_pc = self.btb[pc]
-    
+
         return next_pc
 
     def two_bit(self, pc):
@@ -690,10 +692,18 @@ class Predictor:
 
         elif bit in [2, 3]:
             next_pc = self.btb[pc]
-        else: raise RuntimeError("broken 2 bit predictor")
+        else:
+            raise RuntimeError("broken 2 bit predictor")
 
         return next_pc
-         
+
+    def average_branch_distance(self):
+        if not self.branch_distances:
+            return float("inf")
+
+        distances = [abs(x) for x in self.branch_distances]
+
+        return sum(distances) / len(distances)
 
     def prediction_accuracy(self):
         if self.predicted == 0:
@@ -703,6 +713,7 @@ class Predictor:
     """
     Returns the updated bit and wether we should switch the prediction
     """
+
     def increment_two_bit(self, bit, taken):
 
         if bit == 0:
@@ -716,7 +727,6 @@ class Predictor:
 
         return res
         # else: raise RuntimeError("broken 2 bit")
-
 
     def check(self, rob_entry: ReorderBufferEntry):
 
@@ -733,6 +743,9 @@ class Predictor:
             else:
                 correct_pc = rob_entry.fetched_at_pc + 1
 
+            if taken:
+                self.branch_distances.append(rob_entry.fetched_at_pc - rob_entry.pc)
+
             if self.prediction_method == "one_bit":
                 # have we made the correct prediction
                 success = taken == self.bht[rob_entry.fetched_at_pc]
@@ -741,7 +754,9 @@ class Predictor:
                     self.misses += 1
 
                     # next time predict the opposite thing for the instruction at this pc
-                    self.bht[rob_entry.fetched_at_pc] = int(not self.bht[rob_entry.fetched_at_pc])
+                    self.bht[rob_entry.fetched_at_pc] = int(
+                        not self.bht[rob_entry.fetched_at_pc]
+                    )
 
                     # update the target with the correct value
                     self.btb[rob_entry.fetched_at_pc] = correct_pc
@@ -764,12 +779,11 @@ class Predictor:
                     if should_switch:
                         self.btb[rob_entry.fetched_at_pc] = correct_pc
 
-            if self.prediction_method == 'not_taken':
+            if self.prediction_method == "not_taken":
+                self.misses += 1
                 success = False
-                    
 
-                    
-            return success, correct_pc 
+            return success, correct_pc
 
         # otherwise we are always predicting correctly
 
@@ -984,6 +998,7 @@ class ScheduledProcessor(Processor):
         self.instructions_per_cycle = instructions_per_cycle
 
         self.debug = debug
+        self.finished = []
 
     def tick(self, updates):
         for (
@@ -1215,12 +1230,17 @@ class ScheduledProcessor(Processor):
 
             if not success:
                 self.flush_pipeline(pc=correct_pc)
+                self.executed += 1
+                self.finished.append(rob_entry_to_commit.opcode)
                 return [], True
 
             # committing memory operations
             if Decoder.is_mem(rob_entry_to_commit.opcode):
 
                 lsq_entry_to_commit = self.lsq.lookup(self.lsq.commit_pointer)
+
+                if lsq_entry_to_commit is None:
+                    return [], False
 
                 # stores get put to writeback queue in mem cycle
                 if rob_entry_to_commit.opcode == "sw":
@@ -1243,6 +1263,7 @@ class ScheduledProcessor(Processor):
             self.rob.free()
 
             self.executed += 1
+            self.finished.append(rob_entry_to_commit.opcode)
 
         return updates, False
 
@@ -1274,7 +1295,7 @@ class ScheduledProcessor(Processor):
         self.PC = pc
 
         # increment executed to count the branch
-        self.executed += 1
+        # self.executed += 1
 
     def print_stats(self):
         print(f"CYCLE: {self.cycles}")
