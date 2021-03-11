@@ -1,22 +1,25 @@
 from processor import Processor
 from instruction import Instruction
 
+
 class SimpleProcessor(Processor):
-    def __init__(self, program, symbols, prediction_method=None, instructions_per_cycle=1, debug=False):
+    def __init__(
+        self,
+        program,
+        symbols,
+        prediction_method=None,
+        instructions_per_cycle=1,
+        debug=False,
+    ):
         super().__init__(program, symbols, debug)
 
         self.RF = [0] * 32
 
-
-
-
     def cycle(self):
-
         def fetch(self):
             instruction_string = self.program[self.PC]
 
-            blank_instruction = Instruction(
-                instruction_string, self.symbols, self.PC)
+            blank_instruction = Instruction(instruction_string, self.symbols, self.PC)
 
             self.PC += 1
             return blank_instruction
@@ -34,9 +37,9 @@ class SimpleProcessor(Processor):
 
         def mem_access(self, i):
 
-            if i.opcode == 'lw':
+            if i.opcode == "lw":
                 return self.MEM[i.target_address]
-            elif i.opcode == 'sw':
+            elif i.opcode == "sw":
                 self.MEM[i.target_address] = self.RF[i.target_register]
                 self.executed += 1
 
@@ -47,7 +50,6 @@ class SimpleProcessor(Processor):
             self.RF[i.target_register] = i.result
             self.executed += 1
 
-        
         self.cycles += 1
 
         # Fetch
@@ -56,7 +58,7 @@ class SimpleProcessor(Processor):
         # Decode
         decoded_instruction = decode(self, blank_instruction)
 
-        if (decoded_instruction.branch_target):
+        if decoded_instruction.branch_target:
             # set the pc accordingly and exit this cycle because no work is left to be performed on this instruction
             if decoded_instruction.branch_target != -1:
                 self.PC = decoded_instruction.branch_target

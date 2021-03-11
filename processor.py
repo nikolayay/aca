@@ -5,7 +5,6 @@ from instruction import *
 
 
 class Processor:
-
     def __init__(self, program, symbols, debug=False):
         self.symbols = symbols
         self.program = program
@@ -19,15 +18,14 @@ class Processor:
         self.num_stalls = 0
         self.resolve_labels()
 
-
         self.debug = debug
 
     def resolve_labels(self):
         clean_program = []
         # PC_offset = 0
         for line in self.program:
-            if line[0] == '.':  # ! a label or malloc
-                label = line[1: line.index(':')]
+            if line[0] == ".":  # ! a label or malloc
+                label = line[1 : line.index(":")]
                 values = [int(x) for x in line.split()[1:]]
 
                 addr = len(self.MEM)
@@ -44,7 +42,6 @@ class Processor:
         # to be overloaded by children
         pass
 
-    
     def running(self):
         return self.RF[31] != 1
 
