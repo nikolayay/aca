@@ -177,8 +177,6 @@ class ReorderBuffer:
 
     def free(self):
 
-        # self.entries[self.commit_pointer] = None
-
         self.commit_pointer += 1
 
         if self.commit_pointer == len(self.entries):
@@ -315,7 +313,7 @@ class LoadStoreQueueEntry:
 
 
 """
-Integrates and address unit
+Integrates an address unit
 """
 
 
@@ -655,14 +653,15 @@ class Predictor:
         self.misses = 0
 
         self.btb: Dict[int, int] = {}
-        self.bht = []
+        self.bht: List[int] = [0] * 1024
+        self.bht_two_bit: List[int] = [0] * 1024
 
     def not_taken(self, pc):
 
         predicted_pc = pc + 1
 
         # record
-        self.btb[pc] = predicted_pc
+        # self.btb[pc] = predicted_pc
 
         return predicted_pc
 
@@ -671,21 +670,53 @@ class Predictor:
 
     def one_bit(self, pc):
 
-        predicted_pc = pc + 1
-        next_pc = self.btb[pc] if pc in self.btb else predicted_pc
+        next_pc = pc + 1
 
-        # record
-        self.btb[pc] = next_pc
-
+        bit = self.bht[pc]
+        
+        # if set then return the btb
+        if bit:
+            next_pc = self.btb[pc]
+    
         return next_pc
 
     def two_bit(self, pc):
-        raise RuntimeError("not implemented")
+
+        bit = self.bht_two_bit[pc]
+
+        # if set then return the btb
+        if bit in [0, 1]:
+            next_pc = pc + 1
+
+        elif bit in [2, 3]:
+            next_pc = self.btb[pc]
+        else: raise RuntimeError("broken 2 bit predictor")
+
+        return next_pc
+         
 
     def prediction_accuracy(self):
         if self.predicted == 0:
             return 1
         return 1 - (self.misses / self.predicted)
+
+    """
+    Returns the updated bit and wether we should switch the prediction
+    """
+    def increment_two_bit(self, bit, taken):
+
+        if bit == 0:
+            res = (1, False) if taken else (0, False)
+        elif bit == 1:
+            res = (2, True) if taken else (0, False)
+        elif bit == 2:
+            res = (3, False) if taken else (1, True)
+        elif bit == 3:
+            res = (3, False) if taken else (2, False)
+
+        return res
+        # else: raise RuntimeError("broken 2 bit")
+
 
     def check(self, rob_entry: ReorderBufferEntry):
 
@@ -702,22 +733,43 @@ class Predictor:
             else:
                 correct_pc = rob_entry.fetched_at_pc + 1
 
-            # have we made the correct prediction
-            success = correct_pc == self.btb[rob_entry.fetched_at_pc]
+            if self.prediction_method == "one_bit":
+                # have we made the correct prediction
+                success = taken == self.bht[rob_entry.fetched_at_pc]
 
-            if not success:
-                self.misses += 1
+                if not success:
+                    self.misses += 1
 
-                if self.prediction_method == "one_bit":
+                    # next time predict the opposite thing for the instruction at this pc
+                    self.bht[rob_entry.fetched_at_pc] = int(not self.bht[rob_entry.fetched_at_pc])
 
+                    # update the target with the correct value
                     self.btb[rob_entry.fetched_at_pc] = correct_pc
 
-            # # if our brediction at that pc was wrong then record the miss
-            # # FIXME this is nonsense right now
-            # if self.predicted_pc != correct_pc: self.misses += 1
+            if self.prediction_method == "two_bit":
+                bit = self.bht_two_bit[rob_entry.fetched_at_pc]
 
-            # we return the condition because of the default non taken scheme. we should return the result of the check
-            return success, correct_pc
+                predicted_taken = False if bit in [0, 1] else True
+
+                success = taken == predicted_taken
+
+                if not success:
+                    self.misses += 1
+
+                    new_bit, should_switch = self.increment_two_bit(bit, taken)
+
+                    self.bht_two_bit[rob_entry.fetched_at_pc] = new_bit
+
+                    # update prediction only if we were incorrect and switched_states
+                    if should_switch:
+                        self.btb[rob_entry.fetched_at_pc] = correct_pc
+
+            if self.prediction_method == 'not_taken':
+                success = False
+                    
+
+                    
+            return success, correct_pc 
 
         # otherwise we are always predicting correctly
 

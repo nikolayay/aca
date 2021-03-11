@@ -1,6 +1,8 @@
 from os import listdir
 from os.path import isfile, join
 from columnar import columnar
+import argparse
+from progressbar import progressbar
 import click
 import time
 
@@ -11,18 +13,37 @@ from scheduled_processor import ScheduledProcessor
 
 from tests import tests
 
+parser = argparse.ArgumentParser(
+    description="Run the test suite for all programs"
+)
+
+parser.add_argument(
+    "-s",
+    required=True,
+    help="Superscalar factor",
+    type=int,
+    dest='instructions_per_cycle'
+)
+
+parser.add_argument(
+    "-pred",
+    "--predictor",
+    required=True,
+    help="Choose the branch prediction method.",
+    choices=["taken", "not_taken", "one_bit", "two_bit"],
+    dest="prediction_method",
+)
+
+args = parser.parse_args()
+
+
 
 files = [k for k in tests.keys()]
 processors = [SimpleProcessor, PipelinedProcessor, ScheduledProcessor]
 names = [proc.__name__ for proc in processors]
-
-print(files)
-
-simple_data = []
-pipelined_data = []
 tables_data = []
 
-for processor in processors:
+for processor in progressbar(processors):
     data = []
     for ffile in files:
         try:
@@ -34,7 +55,7 @@ for processor in processors:
         instructions, symbols = assembler.assemble(program)
 
         cpu = processor(
-            instructions, symbols, prediction_method="one_bit", instructions_per_cycle=4
+            instructions, symbols, prediction_method=args.prediction_method, instructions_per_cycle=args.instructions_per_cycle
         )
 
         start = time.time()
@@ -62,7 +83,7 @@ for processor in processors:
             row += [cpu.num_stalls]
 
         if isinstance(cpu, ScheduledProcessor):
-            row += ["{:.2%}".format(cpu.predictor.prediction_accuracy())]
+            row += [cpu.predictor.prediction_accuracy()]
 
         data.append(row)
 
@@ -80,7 +101,7 @@ header = [
 
 for table_data, proc_name in zip(tables_data, names):
     if proc_name == "ScheduledProcessor":
-        h = header + ["pred accuracy"]
+        h = header + ["branch prediction accuracy"]
     elif proc_name == "PipelinedProcessor":
         h = header + ["number of stalls"]
     else:
