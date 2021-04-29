@@ -2,7 +2,7 @@ from os import listdir
 from os.path import isfile, join
 from columnar import columnar
 import argparse
-from progressbar import progressbar
+from tqdm import tqdm
 import click
 import time
 
@@ -40,9 +40,10 @@ processors = [SimpleProcessor, PipelinedProcessor, ScheduledProcessor]
 names = [proc.__name__ for proc in processors]
 tables_data = []
 
-for processor in progressbar(processors):
+for processor in tqdm(processors):
     data = []
-    for ffile in files:
+    
+    for ffile in tqdm(files):
         try:
             with open(ffile) as f:
                 program = f.readlines()
