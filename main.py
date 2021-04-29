@@ -5,6 +5,7 @@ from pipelined_processor import PipelinedProcessor
 from scheduled_processor import ScheduledProcessor
 from tests import tests
 import click
+import columnar
 
 parser = argparse.ArgumentParser(
     description="Run a processor simulation for a given assembly program."

@@ -4,3 +4,4 @@
 4. pip install -r requirements.txt <- installs dependencies
 5. python test.py                  <- to run the test suite
 6. python main.py -h               <- to run the simulator for a single program.
+7. optional use the -d flag to step through the execution

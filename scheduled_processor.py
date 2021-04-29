@@ -1,7 +1,7 @@
 import re
 from typing import *
 from processor import Processor
-from columnar import columnar  # type: ignore
+from columnar import columnar
 
 
 class Instruction:
@@ -786,7 +786,6 @@ class Predictor:
             return success, correct_pc
 
         # otherwise we are always predicting correctly
-
         return True, None
 
 

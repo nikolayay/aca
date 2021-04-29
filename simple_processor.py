@@ -50,7 +50,6 @@ class SimpleProcessor(Processor):
             self.RF[i.target_register] = i.result
             self.executed += 1
 
-        self.cycles += 1
 
         # Fetch
         blank_instruction = fetch(self)
@@ -76,6 +75,9 @@ class SimpleProcessor(Processor):
         # Writeback
         if computed_instruction.result is not None:
             write_back(self, computed_instruction)
+
+        self.cycles += 5
+
 
     def print_stats(self):
         print(self.cycles)
