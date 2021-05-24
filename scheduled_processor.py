@@ -185,10 +185,10 @@ class ReorderBuffer:
 
 class RegisterFile:
     def __init__(self):
-        self.ARF = [0] * 33  # architectural registers + extra for the ROB
+        self.ARF = [0] * 33  # architectural register file + extra for the ROB
         self.RAT = [
             None
-        ] * 33  # mappings to architectural registers # if none we just return corresponding ARF, else its always a ROB mapping
+        ] * 33  # register alias table, mappings to architectural registers # if none we just return corresponding ARF, else its always a ROB mapping
 
     """
     Only used by store instructions
@@ -971,7 +971,7 @@ class ALU:
 
 class ScheduledProcessor(Processor):
     def __init__(
-        self, program, symbols, prediction_method, instructions_per_cycle=1, debug=False
+        self, program, symbols, prediction_method, instructions_per_cycle=8, debug=False
     ):
         super().__init__(program, symbols, debug)
 
@@ -1063,12 +1063,12 @@ class ScheduledProcessor(Processor):
 
             self.tick(updates)
 
+
+            if self.debug:
+                self.print_stats()
+                txt = input("Press enter for next instruction")
+
         self.RF = self.rf.ARF
-
-        if self.debug:
-            self.print_stats()
-            txt = input("Press enter for next cycle")
-
     """
         1. fetch the instruction string from the program
         2. increment the PC
